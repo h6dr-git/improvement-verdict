@@ -1,0 +1,47 @@
+{
+  "entries": [
+    {
+      "config": {
+        "batch_size": 10,
+        "max_runs": 100,
+        "error_budget": 0.05
+      },
+      "threshold": 0.99,
+      "sims": 4000,
+      "achieved_fpr": 0.05175,
+      "fpr_ci95": [
+        0.044885,
+        0.058615
+      ],
+      "power_62_75": 0.345,
+      "seed": 20260710,
+      "calibrated_at_delta": 0.03,
+      "base": 0.62,
+      "note": "A/A 단일 시나리오, delta=0.03 기준 캘리브레이션 — delta>=0.03 인 판정에 보수적 상한. futility 미적용 FPR 상한."
+    },
+    {
+      "config": {
+        "batch_size": 20,
+        "max_runs": 400,
+        "error_budget": 0.05
+      },
+      "threshold": 0.99,
+      "sims": 4000,
+      "achieved_fpr": 0.038,
+      "fpr_ci95": [
+        0.032075,
+        0.043925
+      ],
+      "power_62_75": 0.8375,
+      "seed": 20260710,
+      "calibrated_at_delta": 0.03,
+      "base": 0.62,
+      "note": "A/A 단일 시나리오, delta=0.03 기준 캘리브레이션 — delta>=0.03 인 판정에 보수적 상한. futility 미적용 FPR 상한."
+    }
+  ],
+  "meta": {
+    "tool": "calibrate.py",
+    "seed": 20260710,
+    "note": "verdict.py 가 (batch_size, max_runs, error_budget) 매칭으로 문턱을 로드한다. 합성 A/A 시뮬레이션만 사용(실데이터 없음)."
+  }
+}
