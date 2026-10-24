@@ -1,5 +1,7 @@
 # improvement-verdict — 개선·개악 판별기
 
+[![selftest](https://github.com/h6dr-git/improvement-verdict/actions/workflows/selftest.yml/badge.svg)](https://github.com/h6dr-git/improvement-verdict/actions/workflows/selftest.yml) ![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white) ![표준 라이브러리만](https://img.shields.io/badge/dependencies-none-lightgrey) [![MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 > **AX 인재전쟁 1기 (채널톡 트랙) 예선 제출작** · 2026-07-10 제출 · 예선 등록 5,300여 명 중 본선 60명에 선발(수상 아님)
 > `src/`와 아래 '제출본 설명' 이하는 제출한 파일 그대로입니다(첫 커밋). 이 안내 부분과 LICENSE·CI만 공개하면서 더했습니다.
 
@@ -13,6 +15,43 @@ Python 3.9+ **표준 라이브러리만** 사용합니다. 추가 설치·네트
 ```
 python3 src/scripts/verdict.py --selftest      # 합성 8케이스 자기검증 (약 5초)
 ```
+
+<details>
+<summary>돌려 보면 이렇게 나옵니다 (selftest · 데모 케이스 2)</summary>
+
+```
+selftest 결과 (synth.py 8케이스, seed=20260710):
+  case name               결과                     판정    문제
+  1    aa-null            undetermined           PASS
+  2    true-improvement   improved               PASS
+  3    true-regression    regressed              PASS
+  4    simpson            undetermined           PASS
+  5    ceiling            undetermined           PASS
+  6    floor              undetermined           PASS
+  7    schema-error       rc=2                   PASS
+  8    calibration        verify rc=0            PASS
+selftest 전부 통과
+```
+
+```
+$ python3 src/scripts/synth.py --case 2 | python3 src/scripts/verdict.py - --delta 0.03 --batch-size 20 --max-runs 400 --yes
+========================================================================
+개선·개악 판별 결과  (delta=0.030 [user], batch=20, max_runs=400, error_budget=0.05, seed=20260710)
+캘리브레이션: 문턱 0.990 | 시뮬 4000회 | 달성 FPR 0.0380 (CI95 0.0321~0.0439) | 출처: calibration-default.json (batch=20, max_runs=400, budget=0.05, A/A 몬테카를로)
+------------------------------------------------------------------------
+시나리오별 판정 (층은 before 팔 관측 통과율로 결정 — 표본이 작으면 undetermined 가 정상):
+  - s1_target        [중간층] n=400/400  ->  improved      (P개선 0.999, P개악 0.000, P동등 0.001)
+------------------------------------------------------------------------
+전체 판정(층화 합산): IMPROVED   P(개선)=0.999  P(개악)=0.000  P(동등)=0.001   플래그: single_scenario
+순차 재생: 팔당 300회 시점 개선 확정 — max_runs 400회 대비 팔당 100회 절감 (calls_per_run 미지정: 실행 횟수 기준)
+------------------------------------------------------------------------
+경고/고지:
+  ! 시나리오가 하나뿐이라 층화가 불가능합니다 — 전체 판정만 냅니다
+========================================================================
+기계용 JSON 저장: verdict.json
+```
+
+</details>
 
 ## 어떤 문제를 판정하는가
 
