@@ -1,0 +1,26 @@
+name: selftest
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: selftest (합성 8케이스)
+        run: python3 src/scripts/verdict.py --selftest
+      - name: demo (improved / regressed / undetermined)
+        run: |
+          python3 src/scripts/synth.py --case 2 | python3 src/scripts/verdict.py - --delta 0.03 --batch-size 20 --max-runs 400 --yes
+          python3 src/scripts/synth.py --case 3 | python3 src/scripts/verdict.py - --delta 0.03 --batch-size 20 --max-runs 400 --yes
+          python3 src/scripts/synth.py --case 1 | python3 src/scripts/verdict.py - --delta 0.03 --yes
