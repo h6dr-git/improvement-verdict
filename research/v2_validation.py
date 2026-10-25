@@ -8,8 +8,10 @@
     python3 research/v2_validation.py --parts B  # 일부만
 
 verdict.py 와 같은 판정 규칙(Jeffreys Beta 사후, 시나리오 평균 차이, ROPE ±delta, 캘리브레이션 문턱 0.99,
-batch 10 / max_runs 100 순차 판정)을 속도를 위해 numpy 로 다시 짰다. 체크포인트마다 사후 표본 S개를 한 벌 뽑아
-모든 집계(전체·층별)에 같이 쓴다. 시나리오 하나짜리 집계도 표본으로 계산한다(도구는 그때 결정론적 적분 — 차이는 MC 오차).
+batch 10 / max_runs 100 순차 판정)을 속도를 위해 numpy 로 다시 짰다. 시나리오 하나짜리 집계는 도구와 똑같이
+_stats.prob_diff(결정론적 적분)로, 둘 이상은 체크포인트마다 뽑은 사후 표본 S개 한 벌로 계산한다
+(도구는 체크포인트 1만 개 — 표본이 적은 만큼 경계 근처에서 아주 조금 더 자주 문턱을 넘는다, 즉 보수적인 추정).
+futility(무익 중단)는 넣지 않는다 — 거짓 양성률은 실제보다 높게(상한 쪽으로) 나온다.
 
   A. 층 배정 기준에 따른 쏠림 — 효과 없음(A/A), 중간층 판정만(가드 없이): 수정 전 통과율 vs 양팔 합산 통과율
   B. 효과가 없을 때(A/A) 거짓 양성률 — v1(전체 평균) vs v2, 검토에서 나온 최악 구성 포함
@@ -25,14 +27,25 @@ batch 10 / max_runs 100 순차 판정)을 속도를 위해 numpy 로 다시 짰�
   mid_pool : (A 전용) 중간층을 양팔 합산 통과율로 나눈 주 판정, 가드 없음 — 층 배정 기준만 비교하기 위한 짝
 """
 import argparse
+import os
 import sys
+from functools import lru_cache
 
 import numpy as np
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "scripts"))
+import _stats  # noqa: E402  (도구의 결정론적 적분 — 시나리오 하나짜리 집계용)
 
 THRESHOLD = 0.99
 GUARD_THRESHOLD = 0.999
 DELTA = 0.03
 CEIL, FLOOR = 0.90, 0.10
+
+
+@lru_cache(maxsize=None)
+def _exact(kb, ka, n):
+    p_imp, p_reg, _ = _stats.prob_diff(int(kb), int(n), int(ka), int(n), DELTA)
+    return p_imp, p_reg
 
 
 def simulate(p_before, p_after, rules, sims, seed, n_max=100, batch=10, S=3000, chunk=200):
@@ -63,7 +76,11 @@ def simulate(p_before, p_after, rules, sims, seed, n_max=100, batch=10, S=3000, 
                 if key not in cache:
                     cnt = mask.sum(axis=1)
                     m = (d * mask[:, :, None]).sum(axis=1) / np.maximum(cnt, 1)[:, None]
-                    cache[key] = ((m > DELTA).mean(axis=1), (m < -DELTA).mean(axis=1), cnt > 0)
+                    pi, pr = (m > DELTA).mean(axis=1), (m < -DELTA).mean(axis=1)
+                    for row in np.nonzero(cnt == 1)[0]:  # 시나리오 하나짜리 집계는 도구처럼 정확 적분
+                        j = int(np.argmax(mask[row]))
+                        pi[row], pr[row] = _exact(kb[row, j], ka[row, j], n)
+                    cache[key] = (pi, pr, cnt > 0)
                 return cache[key]
 
             def decide(mask, thr=THRESHOLD):
