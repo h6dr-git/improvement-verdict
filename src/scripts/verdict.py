@@ -18,6 +18,7 @@ import json
 import math
 import os
 import random
+import re
 import subprocess
 import sys
 import tempfile
@@ -494,35 +495,59 @@ def _split(runs, order):
     return scen
 
 
-def apply_expected(order, spec):
-    """--expect-scenarios: 정수 N 또는 쉼표로 구분한 시나리오 ID 목록.
+def _short_list(items, k=8):
+    return ", ".join(items[:k]) + (" 외 %d개" % (len(items) - k) if len(items) > k else "")
 
-    반환 (order, note). ID 목록이면 아직 안 나온 시나리오를 실행 0회로 order 에 넣는다(판정이 그 칸을 기다린다).
-    정수면 이름을 모르므로, 아직 N개가 안 나왔을 때 note 를 'WAIT:'로 시작해 온라인 판정을 미루게 한다.
+
+def apply_expected(order, spec, online):
+    """--expect-scenarios: 1 이상의 정수 N, 또는 쉼표로 구분한 시나리오 ID 목록.
+
+    숫자 하나는 개수로 읽는다 — 숫자 이름의 시나리오 하나만 지정하려면 '7,'처럼 쉼표를 붙인다.
+    반환 (order, notes, wait).
+      - ID 목록 + 온라인: 아직 안 나온 시나리오를 실행 0회 칸으로 order 에 넣는다(판정이 그 칸을 기다린다).
+      - ID 목록 + 일반 실행: 넣지 않는다 — 실행이 없는 시나리오를 뺐다고 notes 로 알린다(0회 칸을 판정하지 않음).
+      - 정수: 이름을 모르므로 아직 N개가 안 나왔으면 wait = (N, 나온 수) — 온라인 판정을 미루게 한다.
+    0 이하·빈 목록은 설정 오류(종료코드 2).
     """
-    if not spec:
-        return order, None
+    if spec is None:
+        return order, [], None
     s = spec.strip()
-    if s.isdigit():
+    if re.fullmatch(r"[+-]?\d+", s):
         n = int(s)
+        if n < 1:
+            sys.stderr.write("설정 오류: --expect-scenarios 는 1 이상의 정수(시나리오 수)이거나 쉼표로 구분한 ID 목록이어야 "
+                             "합니다(현재 %r)\n" % spec)
+            sys.exit(2)
         if len(order) < n:
-            return order, "WAIT:지금까지 시나리오 %d/%d개만 나왔습니다 — 모든 시나리오가 나올 때까지 판정하지 않습니다" % (len(order), n)
+            if online:
+                note = "지금까지 시나리오 %d/%d개만 나왔습니다 — 모든 시나리오가 나올 때까지 판정하지 않습니다" % (len(order), n)
+            else:
+                note = ("--expect-scenarios %d개 중 %d개만 입력에 있습니다 — 나온 시나리오만 본 판정입니다(빠진 시나리오가 "
+                        "나오면 결론이 바뀔 수 있음)" % (n, len(order)))
+            return order, [note], ((n, len(order)) if online else None)
         if len(order) > n:
-            return order, "--expect-scenarios(%d개)보다 많은 시나리오(%d개)가 들어왔습니다 — 입력을 확인하세요" % (n, len(order))
-        return order, None
+            return order, ["--expect-scenarios(%d개)보다 많은 시나리오(%d개)가 들어왔습니다 — 입력을 확인하세요"
+                           % (n, len(order))], None
+        return order, [], None
     ids = []
     for x in s.split(","):
         x = x.strip()
         if x and x not in ids:
             ids.append(x)
+    if not ids:
+        sys.stderr.write("설정 오류: --expect-scenarios 에 시나리오 ID가 없습니다(현재 %r)\n" % spec)
+        sys.exit(2)
     missing = [x for x in ids if x not in order]
     extra = [x for x in order if x not in ids]
     notes = []
-    if missing:
-        notes.append("아직 실행이 없는 시나리오 %d개를 0회로 잡았습니다: %s" % (len(missing), ", ".join(missing[:8])))
+    if missing and online:
+        notes.append("아직 실행이 없는 시나리오 %d개를 0회로 잡았습니다: %s" % (len(missing), _short_list(missing)))
+    elif missing:
+        notes.append("--expect-scenarios 의 시나리오 중 %d개는 입력에 실행이 없어 판정에서 뺐습니다: %s — 나온 시나리오만 본 "
+                     "판정입니다(빠진 시나리오가 나오면 결론이 바뀔 수 있음)" % (len(missing), _short_list(missing)))
     if extra:
-        notes.append("--expect-scenarios 에 없는 시나리오가 들어왔습니다: %s" % ", ".join(extra[:8]))
-    return order + missing, (" / ".join(notes) or None)
+        notes.append("--expect-scenarios 에 없는 시나리오가 들어왔습니다: %s" % _short_list(extra))
+    return (order + missing if online else order), notes, None
 
 
 def _probs_json(p):
@@ -712,6 +737,16 @@ def analyze(runs, order, args, delta, delta_source):
     if seq["stop_reason"] == "futility":
         warnings.append("순차 재생: 남은 예산(max_runs %d)을 가장 유리하게 써도 delta=%.3f 판별이 불가능해 조기 중단했습니다"
                         % (args.max_runs, delta))
+    if (seq["stop_reason"] in ("improved", "regressed") and head["verdict"] in ("improved", "regressed")
+            and seq["stop_reason"] != head["verdict"]):
+        # 순차 판정의 멈춤과 다 돌린 뒤의 주 판정이 반대 방향 — 둘 중 하나는 거짓 양성일 수 있다
+        head_flags.append("replay_conflict")
+        ko = {"improved": "개선", "regressed": "개악"}
+        warnings.append("순차 재생으로는 팔당 %d회에 %s 확정(%s)으로 멈췄을 텐데, 다 돌린 뒤의 주 판정은 %s(%s)입니다 — 방향이 "
+                        "반대입니다. 어느 한쪽이 거짓 양성일 수 있으니(효과가 없는 층에서도 budget 만큼은 생김) 두 결론 모두 "
+                        "확정으로 보지 말고 더 돌려 확인하세요"
+                        % (seq["stopped_at_per_arm"], ko[seq["stop_reason"]], _basis_ko(seq["stop_decided_by"]),
+                           ko[head["verdict"]], _basis_ko(head["decided_by"])))
 
     scen_json = [{k: v for k, v in r.items() if not k.startswith("_")} for r in records]
     result = {
@@ -837,19 +872,42 @@ def print_human(res):
 
 # ---------------------------- 온라인 모드 (멈춤/계속 신호) ----------------------------
 
-def run_online(runs, order, args, delta, delta_source, expected_note=None):
+RUNAWAY_FACTOR = 2  # 온라인: 어떤 칸이 max_runs 의 이 배수를 넘었는데 판정이 안 끝났으면 뒤처진 칸이 막힌 것으로 본다
+
+
+def _online_stuck(msg, cells):
+    """온라인 루프가 끝나지 않을 상태 — 뒤처진 칸을 지목하고 종료코드 2."""
+    cells = sorted(cells, key=lambda x: (x[2], x[0], x[1]))
+    names = ", ".join("%s/%s(%d회)" % c for c in cells[:12]) + (" 외 %d칸" % (len(cells) - 12) if len(cells) > 12 else "")
+    sys.stderr.write("입력 오류: %s%s\n" % (msg, (": " + names) if names else ""))
+    sys.exit(2)
+
+
+def run_online(runs, order, args, delta, delta_source, expected_notes=(), wait=None):
     """QA 도중 배치마다 호출하는 모드. 지금까지의 실행으로 순차 판정을 재생해 멈춤/계속을 종료코드로 낸다.
 
     오프라인 순차 재생과 같은 함수·같은 시드를 쓰므로, 같은 데이터면 멈추는 시점이 정확히 같다 — 단 판정은
     지금까지 나온 시나리오만 안다. 시나리오를 하나씩 차례로 돌리는 파이프라인이면 --expect-scenarios 로
     전체 시나리오를 알려 줘야 한다(아직 안 나온 시나리오는 0회로 잡혀 판정이 시작되지 않는다).
+    팔·칸마다 실행 수가 달라도 된다(예: 기준 실행을 먼저 모아 둔 경우) — 재생이 이미 멈췄으면 그 멈춤을 그대로 낸다.
+    루프가 끝나지 않을 상태만 입력 오류(2)로 막는다: 다른 칸이 max_runs 를 넘었는데 실행이 하나도 없는 칸(빠진
+    시나리오 포함)이 있거나, 어떤 칸이 max_runs 의 RUNAWAY_FACTOR 배를 넘었는데도 다음 판정 시점에 못 닿는 칸이 있을 때.
     종료코드: 0 계속 / 10 개선 확정 / 11 개악 확정 / 12 무익 / 13 예산 소진 (2·3은 입력·설정 오류).
     """
     threshold, calib, uncalibrated = load_calibration(args.calibration, args.batch_size,
                                                       args.max_runs, args.error_budget)
-    if expected_note and expected_note.startswith("WAIT:"):
+    scen = _split(runs, order)
+    counts = {(s, a): len(scen[s][a]) for s in order for a in ("before", "after")}
+    max_count = max(counts.values())
+    if wait:
         # --expect-scenarios N 인데 아직 N개가 다 나오지 않았다 — 판정하지 않고 계속
-        note = expected_note[5:]
+        n_exp, n_seen = wait
+        if max_count > args.max_runs:
+            _online_stuck("--expect-scenarios 로 시나리오 %d개를 기다리는데 %d개만 나왔고, 나온 칸은 이미 max_runs(%d)를 "
+                          "넘었습니다(최대 %d회) — 빠진 시나리오가 실제로 돌고 있는지 확인하세요(시나리오를 하나씩 끝내는 "
+                          "파이프라인이면 시나리오당 실행을 max_runs 이하로 맞추세요)"
+                          % (n_exp, n_seen, args.max_runs, max_count), [])
+        note = expected_notes[0]
         print("CONTINUE — %s" % note)
         with open(args.json_out, "w", encoding="utf-8") as f:
             json.dump({"schema_version": SCHEMA_VERSION, "mode": "online", "action": "continue",
@@ -857,21 +915,10 @@ def run_online(runs, order, args, delta, delta_source, expected_note=None):
                        "scenarios_seen": order}, f, ensure_ascii=False, indent=2)
             f.write("\n")
         sys.exit(ONLINE_EXIT["continue"])
-    scen = _split(runs, order)
-    counts = {(s, a): len(scen[s][a]) for s in order for a in ("before", "after")}
-    cur_min = min(counts.values())
-    max_count = max(counts.values())
-    if max_count > args.max_runs and cur_min < args.max_runs:
-        # 어떤 칸은 예산을 넘겼는데 어떤 칸은 다음 체크포인트에도 못 미친다 — 파이프라인이 그 칸을 안 돌리는 중
-        stuck = sorted("%s/%s(%d회)" % (s, a, n) for (s, a), n in counts.items()
-                       if n < (cur_min // args.batch_size + 1) * args.batch_size)
-        sys.stderr.write("입력 오류: 다른 칸은 max_runs(%d)를 넘었는데 아래 칸은 뒤처져 있어 판정을 진행할 수 없습니다 — "
-                         "파이프라인이 이 칸을 돌리는지 확인하세요: %s\n"
-                         % (args.max_runs, ", ".join(stuck[:12]) + (" 외 %d칸" % (len(stuck) - 12) if len(stuck) > 12 else "")))
-        sys.exit(2)
     seq = sequential_replay(runs, order, delta, threshold, args.error_budget, args.batch_size,
                             args.max_runs, args.ceiling, args.floor, args.seed, args.primary)
     reason = seq["stop_reason"]
+    cur_min = min(counts.values())
     next_ck = (cur_min // args.batch_size + 1) * args.batch_size
     last_ck = min(cur_min, args.max_runs) // args.batch_size * args.batch_size
     if reason in ("improved", "regressed", "futility"):
@@ -881,6 +928,19 @@ def run_online(runs, order, args, delta, delta_source, expected_note=None):
         action, code = "stop", ONLINE_EXIT["max_runs"]
     else:
         action, code, reason = "continue", ONLINE_EXIT["continue"], None
+        empty = [(s, a, n) for (s, a), n in counts.items() if n == 0]
+        # 한 팔 전체가 0회면 '아직 시작 전'(예: 기준 실행을 먼저 넣은 직후)이라 막힌 것으로 보지 않는다
+        arm_not_started = any(all(counts[(s, a)] == 0 for s in order) for a in ("before", "after"))
+        if empty and max_count > args.max_runs and not arm_not_started:
+            _online_stuck("다른 칸은 이미 max_runs(%d)를 넘었는데(최대 %d회) 아래 칸은 실행이 하나도 없어 판정을 시작할 수 "
+                          "없습니다 — 파이프라인이 이 칸을 돌리는지 확인하세요(시나리오를 하나씩 끝내는 파이프라인이면 "
+                          "시나리오당 실행을 max_runs 이하로 맞추세요)" % (args.max_runs, max_count), empty)
+        if max_count > RUNAWAY_FACTOR * args.max_runs:
+            lagging = [(s, a, n) for (s, a), n in counts.items() if n < next_ck]
+            _online_stuck("어떤 칸은 max_runs(%d)의 %d배를 넘었는데(최대 %d회) 아래 칸이 다음 판정 시점(팔당 %d회)에 못 "
+                          "미쳐 판정이 진행되지 않습니다 — 파이프라인이 이 칸을 돌리는지 확인하세요(미리 모아 둔 기준 "
+                          "실행이 길다면 앞에서 max_runs개만 넘기세요)"
+                          % (args.max_runs, RUNAWAY_FACTOR, max_count, next_ck), lagging)
     out = {"schema_version": SCHEMA_VERSION, "mode": "online", "action": action, "reason": reason,
            "exit_code": code, "runs_per_arm_min": cur_min,
            "config": {"delta": delta, "delta_source": delta_source, "primary": args.primary,
@@ -895,8 +955,10 @@ def run_online(runs, order, args, delta, delta_source, expected_note=None):
         print("STOP — 팔당 %d회 시점 %s%s. 남은 QA는 돌리지 않아도 됩니다 (max_runs 대비 팔당 %d회 절감)"
               % (seq["stopped_at_per_arm"], msg, (" [%s]" % where) if where else "", seq["runs_saved_per_arm"]))
         if pr:
-            print("  그 시점 확률: P(개선)=%.3f  P(개악)=%.3f  P(동등)=%.3f  (문턱 %.3f)"
-                  % (pr["p_improved"], pr["p_regressed"], pr["p_rope"], threshold))
+            by_guard = seq.get("stop_decided_by") in SIDE_STRATA
+            print("  그 시점 확률: P(개선)=%.3f  P(개악)=%.3f  P(동등)=%.3f  (%s %.3f)"
+                  % (pr["p_improved"], pr["p_regressed"], pr["p_rope"], "가드 문턱" if by_guard else "문턱",
+                     GUARD_THRESHOLD if by_guard else threshold))
         if reason == "regressed" and seq.get("regressed_scenarios"):
             print("  개악 시나리오: %s" % ", ".join(seq["regressed_scenarios"]))
         print("  전체 보고서: --online 을 빼고 같은 명령으로 다시 실행하세요.")
@@ -917,9 +979,10 @@ def run_online(runs, order, args, delta, delta_source, expected_note=None):
             print("  더 돌릴 것: " + ", ".join("%s/%s +%d" % (x["scenario_id"], x["arm"], x["more"]) for x in lag))
         elif lag:
             print("  더 돌릴 칸 %d개 (목록은 JSON의 to_run)" % len(lag))
-    if expected_note:
-        print("  ! " + expected_note)
-        out["expected_scenarios_note"] = expected_note
+    for note in expected_notes:
+        print("  ! " + note)
+    if expected_notes:
+        out["expected_scenarios_note"] = " / ".join(expected_notes)
     if uncalibrated:
         print("  ! 이 설정은 캘리브레이션이 없어 기본문턱 %.2f 로 판정 중입니다 — 거짓 양성률 보장 없음(calibrate.py 권장)"
               % UNCALIBRATED_THRESHOLD)
@@ -973,6 +1036,21 @@ def run_plan(args):
         sys.exit(2)
     base, target, K, M, delta = args.base, args.target, args.scenarios, args.unchanged_middle, args.delta
     eff_target = base + (target - base) * K / float(K + M)
+    # 판정 경로(표시용): 바뀔 시나리오의 수정 전후 평균 통과율(양팔 합산 통과율의 기대치)로 층을 정한다 — verdict 와
+    # 같은 기준. 시뮬레이션은 체크포인트마다 관측 통과율로 층을 다시 정해 실제 판정 경로를 따른다(calibrate.plan_paths).
+    pooled = (base + target) / 2.0
+    side = None
+    if args.primary == "stratified":
+        side = "ceiling" if pooled >= args.ceiling else ("floor" if pooled <= args.floor else None)
+    if side and M >= 1:
+        # 바뀔 시나리오는 천장·바닥층으로 묶여 그 층의 가드(0.999)로 확정된다 — 그대로일 중간층과 평균하지 않음
+        path, sim_target, sim_k = "guard", target, K
+    elif side:
+        # 중간층이 없으면 주 판정 = 전체 평균(v1 방식) — 바뀔 시나리오만 있음
+        path, sim_target, sim_k = "overall", target, K
+    else:
+        path, sim_target, sim_k = ("overall" if args.primary == "overall" else "middle"), eff_target, K + M
+    guard_thr = GUARD_THRESHOLD if args.primary == "stratified" else None
     configs = []
     for e in load_entries(args.calibration):
         c = e.get("config", {})
@@ -992,7 +1070,8 @@ def run_plan(args):
     rows = []
     for i, (b, m) in enumerate(configs):
         thr, calib, unc = load_calibration(args.calibration, b, m, args.error_budget)
-        sim = calibrate.plan_paths(b, m, base, eff_target, K + M, args.sims, args.seed + 7919 * (i + 1), delta, thr)
+        sim = calibrate.plan_paths(b, m, base, target, K, args.sims, args.seed + 7919 * (i + 1), delta, thr,
+                                   unchanged=M, guard_threshold=guard_thr, ceiling=args.ceiling, floor=args.floor)
         row = {"batch_size": b, "max_runs": m, "threshold": thr, "calibrated": not unc,
                "recorded_fpr": calib["achieved_fpr"]}
         row.update(sim)
@@ -1000,37 +1079,56 @@ def run_plan(args):
     eligible = [r for r in rows if r["calibrated"] and r["power"] >= args.power]
     rec = min(eligible, key=lambda r: (r["expected_runs_per_arm"], r["max_runs"])) if eligible else None
     notes = []
-    lo, hi = min(base, target), max(base, target)
-    if lo >= args.ceiling or hi <= args.floor:
-        g = "ceiling" if lo >= args.ceiling else "floor"
-        notes.append("수정 전후 통과율이 둘 다 %s층 범위라, 실제 판정에서는 이 시나리오들이 중간층이 아니라 %s층으로 분류됩니다"
-                     "(중간층이 따로 있으면 주 판정에 들어가지 않습니다)." % (STRATUM_KO[g], STRATUM_KO[g]))
+    if path == "guard":
+        share = sum(r["guard_path_share"] for r in rows) / float(len(rows))
+        notes.append("바뀔 시나리오의 수정 전후 평균 통과율(%.0f%%)이 %s층 기준(%.0f%% %s)이라, 실제 판정에서는 대개 %s층으로 "
+                     "묶여 그 층의 가드(문턱 %.3f)로 확정됩니다 — 그대로일 중간층 %d개와 평균하지 않습니다. 시뮬레이션은 "
+                     "판정 시점마다 관측 통과율로 층을 다시 정해 실제 판정 경로를 따랐습니다(가드 경로 비율 약 %.0f%%)."
+                     % (pooled * 100, STRATUM_KO[side], (args.ceiling if side == "ceiling" else args.floor) * 100,
+                        "이상" if side == "ceiling" else "이하", STRATUM_KO[side], GUARD_THRESHOLD, M, share * 100))
+    elif path == "overall" and side:
+        notes.append("바뀔 시나리오가 %s층(수정 전후 평균 통과율 %.0f%%)이고 그대로일 중간층이 없어, 실제 판정은 전체 평균(v1 "
+                     "방식, 캘리브레이션 문턱)으로 납니다." % (STRATUM_KO[side], pooled * 100))
+    near = min(abs(pooled - args.ceiling), abs(pooled - args.floor))
+    if args.primary == "stratified" and near < 0.03 and path != "guard":
+        notes.append("바뀔 시나리오의 수정 전후 평균 통과율(%.0f%%)이 층 경계(%.0f%% / %.0f%%)에 가까워 표본에 따라 다른 층으로 "
+                     "묶입니다 — 시뮬레이션은 판정 시점마다 층을 다시 정해 따라가지만, 바뀔 시나리오들을 하나로 합친 근사입니다."
+                     % (pooled * 100, args.floor * 100, args.ceiling * 100))
     if abs(target - base) <= delta:
         notes.append("기대 개선폭 %.1f%%p가 delta(%.1f%%p) 이하입니다 — 이 도구는 delta 밖의 차이만 개선으로 확정합니다."
                      % (abs(target - base) * 100, delta * 100))
-    elif abs(eff_target - base) <= delta:
+    elif path != "guard" and abs(sim_target - base) <= delta:
         notes.append("그대로일 중간층 시나리오 %d개와 평균하면 기대 차이가 %.1f%%p로 delta(%.1f%%p) 이하가 됩니다 — "
-                     "중간층 평균으로는 확정할 수 없습니다." % (M, abs(eff_target - base) * 100, delta * 100))
+                     "중간층 평균으로는 확정할 수 없습니다." % (M, abs(sim_target - base) * 100, delta * 100))
     if any(not r["calibrated"] for r in rows):
         notes.append("캘리브레이션이 없는 설정은 기본문턱 0.99로 시뮬레이션한 참고값이며 권장 대상이 아닙니다 — 그 설정의 "
                      "거짓 양성률은 보장되지 않습니다(쓰려면 calibrate.py 로 먼저 캘리브레이션).")
-    approx = _stats.needed_runs(base, eff_target, delta, args.error_budget, power=args.power)
+    approx_alpha = (1.0 - GUARD_THRESHOLD) if path == "guard" else args.error_budget
+    approx = _stats.needed_runs(base, sim_target, delta, approx_alpha, power=args.power)
+    path_ko = {"middle": "중간층 평균 — 바뀔 %d개 + 그대로 %d개, 캘리브레이션 문턱" % (K, M),
+               "guard": ("%s층 가드 — 바뀔 %d개만, 가드 문턱 %.3f (주 판정은 그대로인 중간층 %d개, 캘리브레이션 문턱)"
+                         % (STRATUM_KO[side] if side else "", K, GUARD_THRESHOLD, M)),
+               "overall": "전체 평균(v1 방식) — %d개, 캘리브레이션 문턱" % sim_k}[path]
     out = {"schema_version": SCHEMA_VERSION, "mode": "plan",
            "inputs": {"base": base, "target": target, "scenarios": K, "unchanged_middle": M,
-                      "effective_target": round(eff_target, 6), "delta": delta,
+                      "effective_target": round(sim_target, 6), "delta": delta,
                       "error_budget": args.error_budget, "target_power": args.power, "sims": args.sims,
-                      "seed": args.seed},
+                      "seed": args.seed, "primary": args.primary},
+           "decision_path": path,
+           "decision_stratum": side,
+           "guard_threshold": guard_thr,
            "configs": rows,
            "recommended": ({"batch_size": rec["batch_size"], "max_runs": rec["max_runs"]} if rec else None),
-           "normal_approx_runs_per_arm": (int(math.ceil(approx / float(K + M))) if approx else None),
+           "normal_approx_runs_per_arm": (int(math.ceil(approx / float(sim_k))) if approx else None),
            "notes": notes,
-           "method": "바뀔 시나리오 K개와 그대로일 중간층 M개를 체크포인트마다 실행 수를 합친 단일 시나리오로 근사한"
-                     " 순차 판정 시뮬레이션 — futility 미적용(평균 실행 수는 상한 쪽)"}
+           "method": "판정 경로의 시나리오들을 체크포인트마다 실행 수를 합친 단일 시나리오로 근사한 순차 판정 시뮬레이션"
+                     " — futility 미적용(평균 실행 수는 상한 쪽)"}
     print("=" * 72)
     print("계획 모드: 수정 전 %.0f%% -> 수정 후 %.0f%% 기대(%s 검출), 바뀔 시나리오 %d개 + 그대로일 중간층 %d개, "
           "delta %.3f, error_budget %g, 목표 검출률 %.0f%%"
           % (base * 100, target * 100, "개악" if target < base else "개선", K, M, delta, args.error_budget,
              args.power * 100))
+    print("판정 경로: %s" % path_ko)
     print("-" * 72)
     print("  %-22s %-8s %-10s %-16s %-14s %s" % ("설정", "검출률", "평균 멈춤", "평균 실행(팔당)", "거짓양성(기록)", "문턱"))
     for r in rows:
@@ -1058,8 +1156,8 @@ def run_plan(args):
             print("캘리브레이션된 설정이 없어 권장할 수 없습니다.")
         print("  -> 바뀔 시나리오를 늘리거나, max_runs를 키운 설정을 calibrate.py로 캘리브레이션한 뒤 다시 계획하세요.")
     if out["normal_approx_runs_per_arm"]:
-        print("참고: 정규근사 표본계획으로는 중간층 시나리오 %d개 기준 팔당 약 %d회 (고정 표본 근사 — 순차 판정과 다름)"
-              % (K + M, out["normal_approx_runs_per_arm"]))
+        print("참고: 정규근사 표본계획으로는 판정 경로의 시나리오 %d개 기준 팔당 약 %d회 (고정 표본 근사 — 순차 판정과 다름)"
+              % (sim_k, out["normal_approx_runs_per_arm"]))
     for n in notes:
         print("  ! " + n)
     print("  (시뮬 %d회/설정, %s)" % (args.sims, out["method"]))
@@ -1109,6 +1207,9 @@ def _check_dataset_case(meta, exp, res, problems):
     seq = res["sequential"]
     if es is True and (seq["stop_reason"] not in ("improved", "regressed") or seq["runs_saved_per_arm"] <= 0):
         problems.append("조기 종료 기대: 실제 stop_reason=%s, 절감 %d" % (seq["stop_reason"], seq["runs_saved_per_arm"]))
+    elif es is True and hd.get("verdict") in ("improved", "regressed") and seq["stop_reason"] != hd["verdict"]:
+        # 멈추기만 하면 되는 게 아니라 주 판정과 같은 방향으로 멈춰야 한다
+        problems.append("조기 종료 방향 %s 가 주 판정 %s 와 다름" % (seq["stop_reason"], hd["verdict"]))
     # early_stop=False 는 '결론에 의한 조기 종료 없음'으로 해석(futility 는 허용)
     if es is False and seq["stop_reason"] in ("improved", "regressed"):
         problems.append("조기 종료 없음 기대: 실제 %s" % seq["stop_reason"])
@@ -1187,6 +1288,31 @@ def run_selftest(args):
                 want_rec = exp.get("recommended")
                 if want_rec and (not rec or [rec["batch_size"], rec["max_runs"]] != want_rec):
                     problems.append("권장 설정 %r 기대, 실제 %r" % (want_rec, rec))
+            g = meta.get("plan_guard")
+            if g and not problems:
+                # 바뀔 시나리오가 천장·바닥층에 묶이는 계획: 가드 경로로 계산하는지
+                jpath = os.path.join(tmpdir, "case%d_guard.json" % case)
+                rc, out, err = _run([sys.executable, me, "--plan", "--base", str(g["base"]), "--target", str(g["target"]),
+                                     "--scenarios", str(g["scenarios"]), "--unchanged-middle", str(g["unchanged_middle"]),
+                                     "--delta", str(meta["delta"]), "--error-budget", str(meta["error_budget"]),
+                                     "--sims", str(g["sims"]), "--power", str(g["power"]),
+                                     "--calibration", args.calibration, "--seed", seed, "--json-out", jpath])
+                if rc != 0:
+                    problems.append("plan(가드 경로) 종료코드 %d: %s" % (rc, err.strip()[:200]))
+                else:
+                    with open(jpath, "r", encoding="utf-8") as f:
+                        res = json.load(f)
+                    if res.get("decision_path") != g["decision_path"]:
+                        problems.append("판정 경로 %r 기대, 실제 %r" % (g["decision_path"], res.get("decision_path")))
+                    b_, m_, want = g["reference_power"]
+                    row = [r for r in res["configs"] if (r["batch_size"], r["max_runs"]) == (b_, m_)]
+                    if not row:
+                        problems.append("가드 경로 계획에 batch %d/max %d 설정이 없음" % (b_, m_))
+                    else:
+                        got += " | 가드 경로 %.0f%%" % (row[0]["power"] * 100)
+                        if abs(row[0]["power"] - want) > exp["power_tolerance"]:
+                            problems.append("가드 경로 batch %d/max %d 검출률 %.3f — 판정 규칙 시뮬 %.3f 와 %.2f 넘게 차이"
+                                            % (b_, m_, row[0]["power"], want, exp["power_tolerance"]))
         else:
             rc, data, err = _run([sys.executable, synth, "--case", str(case)])
             if rc != 0:
@@ -1241,6 +1367,36 @@ def run_selftest(args):
                             problems.append("--expect-scenarios %s: 빠진 시나리오가 있으면 계속(0)이어야 하는데 %d"
                                             % ("N" if spec.isdigit() else "목록", rc3))
                     codes.append("빠진 시나리오 대기:%s" % ("ok" if not problems else "x"))
+                    # 수정 전 실행을 먼저 다 모아 둔 파이프라인: before 전부 -> after 배치. max_runs 를 절반으로 잡아
+                    # before 가 max_runs 보다 긴 상태를 만든다 — 첫 호출(after 0회)부터 끊기지 않고, 같은 순서의
+                    # 오프라인 재생과 같은 시점·같은 코드로 멈춰야 한다
+                    bf_common = common + ["--max-runs", str(meta["max_runs"] // 2)]
+                    recs_ = [json.loads(ln) for ln in lines]
+                    befores = [ln for ln, r in zip(lines, recs_) if r["arm"] == "before"]
+                    afters = [ln for ln, r in zip(lines, recs_) if r["arm"] == "after"]
+                    full_bf = "\n".join(befores + afters) + "\n"
+                    jbf = os.path.join(tmpdir, "case%d_bf.json" % case)
+                    rc4, _, err4 = _run([sys.executable, me, "-"] + bf_common + ["--yes", "--json-out", jbf],
+                                        stdin_text=full_bf)
+                    if rc4 != 0:
+                        problems.append("수정 전 먼저 순서 오프라인 실행 실패: %s" % err4.strip()[:120])
+                    else:
+                        with open(jbf, "r", encoding="utf-8") as f:
+                            seq_bf = json.load(f)["sequential"]
+                        at_bf = seq_bf["stopped_at_per_arm"]
+                        bf_checks = [(at_bf - meta["batch_size"], ONLINE_EXIT["continue"]),
+                                     (at_bf, ONLINE_EXIT.get(seq_bf["stop_reason"]))]
+                        bf_ok = True
+                        for per_arm, want in bf_checks:
+                            text_bf = "\n".join(befores + afters[:per_arm * n_scen]) + "\n"
+                            rc5, out5, err5 = _run([sys.executable, me, "-"] + bf_common +
+                                                   ["--online", "--json-out", os.path.join(tmpdir, "online.json")],
+                                                   stdin_text=text_bf)
+                            if rc5 != want:
+                                bf_ok = False
+                                problems.append("수정 전 먼저 순서, after 팔당 %d회: 종료코드 %s 기대, 실제 %d (%s)"
+                                                % (per_arm, want, rc5, (err5 or out5).strip()[:120]))
+                        codes.append("수정 전 먼저:%s" % ("ok" if bf_ok else "x"))
                     got += " | 온라인 " + " ".join(codes)
         ok = not problems
         all_ok &= ok
@@ -1268,12 +1424,15 @@ def main():
     ap.add_argument("--primary", choices=("stratified", "overall"), default="stratified",
                     help="주 판정 기준: stratified(기본 — 천장·바닥층이 있으면 중간층 기준 + 가드) | overall(v1과 같은 전체 평균)")
     ap.add_argument("--ceiling", type=float, default=0.90,
-                    help="천장 층 경계 — 수정 전후 두 팔 모두 이 통과율 이상이면 천장층 (기본 0.90)")
+                    help="천장층 경계 — 양팔 합산 통과율이 이 값 이상이면 천장층 (기본 0.90). "
+                         "'개선 여지 작음'(ceiling) 플래그는 두 팔이 모두 이 값 이상일 때만")
     ap.add_argument("--floor", type=float, default=0.10,
-                    help="바닥 층 경계 — 수정 전후 두 팔 모두 이 통과율 이하면 바닥층 (기본 0.10)")
+                    help="바닥층 경계 — 양팔 합산 통과율이 이 값 이하면 바닥층 (기본 0.10). "
+                         "floor·not_task_fixable 플래그는 두 팔이 모두 이 값 이하일 때만")
     ap.add_argument("--expect-scenarios", default=None,
-                    help="전체 시나리오 수(정수) 또는 ID 목록(쉼표 구분) — 시나리오를 하나씩 차례로 돌리는 파이프라인에서 "
-                         "--online 이 아직 안 나온 시나리오를 기다리게 함")
+                    help="전체 시나리오 수(1 이상의 정수) 또는 ID 목록(쉼표 구분) — 시나리오를 하나씩 차례로 돌리는 "
+                         "파이프라인에서 --online 이 아직 안 나온 시나리오를 기다리게 함. 숫자 하나는 개수로 읽으므로 "
+                         "숫자 이름의 시나리오 하나만 지정하려면 '7,'처럼 쉼표를 붙임")
     ap.add_argument("--batch-size", type=int, default=None, help="조기 종료 판정 주기 (기본 %d)" % DEFAULT_BATCH)
     ap.add_argument("--max-runs", type=int, default=None, help="팔당 최대 실행 수 예산 (기본 %d)" % DEFAULT_MAX_RUNS)
     ap.add_argument("--error-budget", type=float, default=0.05, help="허용 거짓 양성률 (기본 0.05)")
@@ -1331,14 +1490,13 @@ def main():
             sys.exit(2)
 
     runs, order = parse_input(text)
-    order, expected_note = apply_expected(order, args.expect_scenarios)
+    order, expected_notes, wait = apply_expected(order, args.expect_scenarios, args.online)
     delta, delta_source = resolve_delta(args, _split(runs, order), order)
     if args.online:
-        run_online(runs, order, args, delta, delta_source, expected_note)
+        run_online(runs, order, args, delta, delta_source, expected_notes, wait)
         return
     res = analyze(runs, order, args, delta, delta_source)
-    if expected_note:
-        res["warnings"].append(expected_note[5:] if expected_note.startswith("WAIT:") else expected_note)
+    res["warnings"].extend(expected_notes)
     print_human(res)
     with open(args.json_out, "w", encoding="utf-8") as f:
         json.dump(res, f, ensure_ascii=False, indent=2)

@@ -16,6 +16,7 @@ futility(무익 중단)는 넣지 않는다 — 거짓 양성률은 실제보다
   A. 층 배정 기준에 따른 쏠림 — 효과 없음(A/A), 중간층 판정만(가드 없이): 수정 전 통과율 vs 양팔 합산 통과율
   B. 효과가 없을 때(A/A) 거짓 양성률 — v1(전체 평균) vs v2, 검토에서 나온 최악 구성 포함
   C. 효과가 있을 때 올바른 방향 검출률과 검출 시 평균 멈춤 — v1 vs v2 (같은 경로로 짝지어 비교)
+  D. 계획 모드(verdict.py --plan) 근사 대조 — 같은 계획을 시나리오별 판정 규칙(v2)으로 돌린 검출률
 
 규칙
   v1       : 전체 평균의 improved/regressed 에서 멈춤
@@ -171,7 +172,7 @@ def part_b(sims):
         sys.stdout.flush()
 
 
-def part_c(sims):
+def part_c(sims, only=None):
     print("\n[C] 효과가 있을 때 — 올바른 방향 검출률과 검출 시 평균 멈춤(팔당, max 100)")
     cases = [("중간 3개만 60->75%, 천장 2·바닥 2 그대로",
               [0.6, 0.6, 0.6, 0.97, 0.97, 0.05, 0.05], [0.75, 0.75, 0.75, 0.97, 0.97, 0.05, 0.05], "improved"),
@@ -186,8 +187,14 @@ def part_c(sims):
              ("중간 2개 그대로, 천장 3개 99->89% (잘 되던 게 깨짐)",
               [0.6, 0.6, 0.99, 0.99, 0.99], [0.6, 0.6, 0.89, 0.89, 0.89], "regressed"),
              ("중간 2개 그대로, 천장 3개 100->93% (조금씩 깨짐)",
-              [0.6, 0.6, 1.0, 1.0, 1.0], [0.6, 0.6, 0.93, 0.93, 0.93], "regressed")]
+              [0.6, 0.6, 1.0, 1.0, 1.0], [0.6, 0.6, 0.93, 0.93, 0.93], "regressed"),
+             ("중간 3개 60->52% + 천장 3개 97->92% (층에 고르게 퍼진 개악)",
+              [0.6, 0.6, 0.6, 0.97, 0.97, 0.97], [0.52, 0.52, 0.52, 0.92, 0.92, 0.92], "regressed"),
+             ("중간 3개 60->70% + 천장 3개 92->97% (층에 고르게 퍼진 개선)",
+              [0.6, 0.6, 0.6, 0.92, 0.92, 0.92], [0.70, 0.70, 0.70, 0.97, 0.97, 0.97], "improved")]
     for i, (name, pb, pa, want) in enumerate(cases):
+        if only and (i + 1) not in only:
+            continue
         t = simulate(pb, pa, ["v1", "v2"], sims, seed=301 + i)
         out = []
         for r in ("v1", "v2"):
@@ -199,12 +206,27 @@ def part_c(sims):
         sys.stdout.flush()
 
 
+def part_d(sims):
+    print("\n[D] 계획 모드 근사 대조 — 시나리오별 판정 규칙(v2) 검출률 (batch 10 / max 100)")
+    cases = [("--base .60 --target .75 --scenarios 3 --unchanged-middle 1", [0.6] * 4, [0.75] * 3 + [0.6]),
+             ("--base .85 --target .97 --scenarios 1 --unchanged-middle 2 (그대로인 쪽 85%)",
+              [0.85, 0.85, 0.85], [0.97, 0.85, 0.85]),
+             ("--base .85 --target .97 --scenarios 1 --unchanged-middle 2 (그대로인 쪽 60%)",
+              [0.85, 0.6, 0.6], [0.97, 0.6, 0.6])]
+    for i, (name, pb, pa) in enumerate(cases):
+        t = simulate(pb, pa, ["v2"], sims, seed=901 + i)
+        f, ci = _rate(t["v2"]["improved"], sims)
+        print("    %-70s v2 검출 %.3f±%.3f" % (name, f, ci))
+        sys.stdout.flush()
+
+
 def main():
     ap = argparse.ArgumentParser(description="v2 설계 검증 시뮬레이션 (numpy)")
     ap.add_argument("--quick", action="store_true", help="시뮬 수를 줄인 빠른 확인")
-    ap.add_argument("--parts", default="ABC", help="돌릴 부분 (예: A, BC — 기본 ABC)")
+    ap.add_argument("--parts", default="ABCD", help="돌릴 부분 (예: A, BC — 기본 ABCD)")
+    ap.add_argument("--c-cases", default=None, help="C에서 돌릴 줄 번호만 (예: 8 또는 1,8 — 기본 전부)")
     args = ap.parse_args()
-    sa, sb, sc = (300, 300, 200) if args.quick else (2000, 4000, 1000)
+    sa, sb, sc, sd = (300, 300, 200, 300) if args.quick else (2000, 4000, 1000, 2000)
     print("v2 설계 검증 — 문턱 %.2f(가드 %.3f), delta %.2f, batch 10 / max_runs 100, 사후 표본 3000/체크포인트"
           % (THRESHOLD, GUARD_THRESHOLD, DELTA))
     parts = args.parts.upper()
@@ -213,7 +235,9 @@ def main():
     if "B" in parts:
         part_b(sb)
     if "C" in parts:
-        part_c(sc)
+        part_c(sc, [int(x) for x in args.c_cases.split(",")] if args.c_cases else None)
+    if "D" in parts:
+        part_d(sd)
 
 
 if __name__ == "__main__":

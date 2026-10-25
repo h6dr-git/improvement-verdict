@@ -320,6 +320,10 @@ CASES = {
         "error_budget": 0.05,
         "scenarios": [],
         "plan": {"base": 0.62, "target": 0.75, "scenarios": 1, "sims": 400, "power": 0.8},
+        # 바뀔 시나리오가 천장층에 묶이는 경우: 가드 경로로 계산해야 한다(중간층 평균에 묽히면 7%로 과소추정).
+        # 참고 검출률 0.225 = research/v2_validation.py 의 시나리오별 판정 규칙 시뮬레이션(2,000회, batch 10 / max 100).
+        "plan_guard": {"base": 0.85, "target": 0.97, "scenarios": 1, "unchanged_middle": 2, "sims": 400,
+                       "power": 0.8, "decision_path": "guard", "reference_power": [10, 100, 0.225]},
         "expected": {
             "verdict_in": [],
             "flags_required": [],
@@ -332,7 +336,8 @@ CASES = {
             "v2 계획 모드 검증: 62%->75%, 시나리오 1개, delta 0.03 으로 --plan 을 돌려 설정별 검출률이 "
             "calibration-default.json 에 기록된 검정력(power_62_75: batch10/max100 0.345, batch20/max400 0.8375)과 "
             "몬테카를로 오차(±0.10) 안에서 일치하고, 목표 검출률 80%에서 batch 20 / max 400 을 권장해야 한다. "
-            "데이터를 출력하지 않는다."
+            "또 85%->97%(양팔 합산 기대 91%, 천장층) + 그대로인 중간층 2개는 가드 경로로 계산해 batch10/max100 검출률이 "
+            "시나리오별 판정 규칙 시뮬레이션 값(0.225)과 ±0.10 안이어야 한다. 데이터를 출력하지 않는다."
         ),
     },
     13: {
@@ -359,7 +364,9 @@ CASES = {
             "scenario_strata": {"fix_1": "ceiling", "rescue_1": "floor", "same_1": "middle", "ceil_1": "ceiling"},
             "scenario_flags_absent": {"fix_1": ["ceiling"], "rescue_1": ["floor", "not_task_fixable"]},
             "error": False,
-            "early_stop": True,
+            # 순차 재생의 멈춤은 기대하지 않는다 — 그대로인 50% 중간층 하나가 도착 순서에 따라 거짓 양성으로 먼저
+            # 멈출 수 있다(효과 없는 층의 거짓 양성률 범위, 그때는 replay_conflict 경고).
+            "early_stop": None,
         },
         "notes": (
             "v2 가드 개선 케이스(검토에서 찾은 결함의 회귀 방지): 85%->99%로 크게 고친 시나리오는 양팔 합산 통과율이 높아 "
@@ -455,6 +462,8 @@ def build_meta(case_no):
     }
     if "plan" in spec:
         meta["plan"] = spec["plan"]
+    if "plan_guard" in spec:
+        meta["plan_guard"] = spec["plan_guard"]
     return meta
 
 

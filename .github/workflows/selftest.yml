@@ -38,5 +38,7 @@ jobs:
             break
           done
           test "$rc" -eq 10
-      - name: demo (계획 모드)
-        run: python3 src/scripts/verdict.py --plan --base 0.60 --target 0.75 --scenarios 3 --unchanged-middle 1 --delta 0.03
+      - name: demo (계획 모드 — 중간층 평균 / 천장층 가드 경로)
+        run: |
+          python3 src/scripts/verdict.py --plan --base 0.60 --target 0.75 --scenarios 3 --unchanged-middle 1 --delta 0.03
+          python3 src/scripts/verdict.py --plan --base 0.85 --target 0.97 --scenarios 1 --unchanged-middle 2 --delta 0.03
