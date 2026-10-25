@@ -14,6 +14,7 @@
    캘리브레이션 delta 보다 작으면 보장이 근사로 약해진다고 경고한다.)
 - 재생에 futility 중단을 넣지 않는다: futility 는 improved/regressed 를 내지 않으므로
   이를 뺀 시뮬레이션 FPR 은 실제 FPR 의 상한이다(보수 방향).
+- plan_paths(): verdict.py --plan 용 순차 판정 시뮬레이션(같은 prob_diff·같은 문턱) — 검출률·평균 멈춤 시점.
 """
 import argparse
 import json
@@ -63,6 +64,110 @@ def replay_paths(batch, max_runs, p_before, p_after, sims, seed, delta):
                 break  # 그리드 최고 문턱(0.995)을 이미 넘었다 — 남은 체크포인트는 결과 불변
         out.append((mx, mx_imp))
     return out
+
+
+def plan_paths(batch, max_runs, p_before, p_after, scenarios, sims, seed, delta, threshold,
+               unchanged=0, guard_threshold=None, ceiling=0.90, floor=0.10, unchanged_rate=None):
+    """계획 모드(verdict.py --plan)용 순차 판정 시뮬레이션.
+
+    바뀔 시나리오 K개(p_before -> p_after)와 그대로인 중간층 시나리오 M개(수정 전후 모두 unchanged_rate,
+    기본 p_before)를 시나리오마다 따로 뽑고, 판정 시점마다 verdict 와 같이 시나리오별 양팔 합산 통과율로
+    층을 정한다(양팔 전승/전패 시나리오는 집계에서 뺌). 층 안의 시나리오들은 실행 수를 합친 단일 시나리오로
+    근사한다(층 평균 차이의 사후분포와 분산이 같아지는 근사 — K=1, M=0 이면 판정 경로가 verdict 와 정확히 같다).
+      - guard_threshold 가 없으면(전체 평균 판정): 모든 시나리오를 합친 평균으로 판정.
+      - guard_threshold 가 있으면(층별 판정): 중간층과 천장·바닥층이 함께 있으면 verdict 의 주 판정 규칙과 같이
+        주 판정 = 중간층(threshold), 천장·바닥층 = 가드(guard_threshold, 양방향), 개악이 있으면 개악,
+        아니면 개선. 그렇지 않으면 전체 평균(threshold).
+    첫 확정(improved/regressed)에서 멈추고 futility 는 넣지 않는다(평균 실행 수는 상한 쪽).
+    '검출'은 기대 방향의 확정이다 — p_after > p_before 면 improved, 작으면 regressed.
+    반환: 검출률, 반대 방향 오판율, 검출 시 평균 멈춤(팔당), 전체 평균 실행 수(팔당),
+    바뀔 시나리오가 천장·바닥층 가드로 판정된 시점의 비율(guard_path_share).
+    """
+    ncheck = max_runs // batch
+    K, M = scenarios, unchanged
+    u = p_before if unchanged_rate is None else unchanged_rate
+    want = "regressed" if p_after < p_before else "improved"
+    cdf_b = _stats.binom_cdf_table(batch, p_before)
+    cdf_a = _stats.binom_cdf_table(batch, p_after)
+    cdf_u = _stats.binom_cdf_table(batch, u) if M else None
+    rng = random.Random(seed)
+    draw = _stats.binom_draw
+    pdiff = _stats.prob_diff
+
+    def pooled(cells, n):
+        kb = sum(c[0] for c in cells)
+        ka = sum(c[1] for c in cells)
+        nn = n * len(cells)
+        return pdiff(kb, nn, ka, nn, delta)
+
+    detected = wrong = 0
+    stop_sum = 0
+    runs_sum = 0
+    looks = guard_looks = 0
+    for _ in range(sims):
+        kb = [0] * K
+        ka = [0] * K
+        ub = [0] * M
+        ua = [0] * M
+        n = 0
+        outcome = None
+        for c in range(1, ncheck + 1):
+            for i in range(K):
+                kb[i] += draw(rng, cdf_b)
+                ka[i] += draw(rng, cdf_a)
+            for j in range(M):
+                ub[j] += draw(rng, cdf_u)
+                ua[j] += draw(rng, cdf_u)
+            n += batch
+            looks += 1
+            cells = [(kb[i], ka[i], True) for i in range(K)] + [(ub[j], ua[j], False) for j in range(M)]
+            cells = [x for x in cells if not ((x[0] == n and x[1] == n) or (x[0] == 0 and x[1] == 0))]
+            if not cells:
+                continue
+            groups = {"middle": [], "ceiling": [], "floor": []}
+            for x in cells:
+                rp = (x[0] + x[1]) / (2.0 * n)
+                groups["ceiling" if rp >= ceiling else ("floor" if rp <= floor else "middle")].append(x)
+            imp = reg = False
+            if guard_threshold is not None and groups["middle"] and (groups["ceiling"] or groups["floor"]):
+                if any(x[2] for g in ("ceiling", "floor") for x in groups[g]):
+                    guard_looks += 1
+                m_imp, m_reg, _ = pooled(groups["middle"], n)
+                reg, imp = m_reg >= threshold, m_imp >= threshold
+                side_imp = False
+                for g in ("ceiling", "floor"):
+                    if groups[g]:
+                        g_imp, g_reg, _ = pooled(groups[g], n)
+                        if g_reg >= guard_threshold:
+                            reg = True
+                        elif g_imp >= guard_threshold:
+                            side_imp = True
+                imp = (imp or side_imp) and not reg
+            else:
+                p_imp, p_reg, _ = pooled(cells, n)
+                imp, reg = p_imp >= threshold, p_reg >= threshold
+            if imp:
+                outcome = ("improved", c * batch)
+                break
+            if reg:
+                outcome = ("regressed", c * batch)
+                break
+        if outcome is None:
+            runs_sum += ncheck * batch
+        else:
+            runs_sum += outcome[1]
+            if outcome[0] == want:
+                detected += 1
+                stop_sum += outcome[1]
+            else:
+                wrong += 1
+    return {"direction": want,
+            "power": round(detected / float(sims), 4),
+            "wrong_direction": round(wrong / float(sims), 4),
+            "mean_stop_when_detected": (round(stop_sum / float(detected), 1) if detected else None),
+            "expected_runs_per_arm": round(runs_sum / float(sims), 1),
+            "guard_path_share": round(guard_looks / float(looks), 4) if looks else 0.0,
+            "sims": sims}
 
 
 def calibrate_config(batch, max_runs, budget, base, sims, seed, delta):

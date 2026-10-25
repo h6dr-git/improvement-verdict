@@ -1,22 +1,27 @@
 {
   "name": "improvement-verdict",
-  "version": "1.0.0",
-  "description": "비결정적 AI 워크플로우의 수정 전/후 통과 결과(JSONL)를 상대 비교해 개선/개악/차이 없음/아직 모름을 판정하고, 조기 종료로 남은 QA 실행(LLM 호출)을 아끼는 판정 레이어.",
+  "version": "2.0.0",
+  "description": "비결정적 AI 워크플로우의 수정 전/후 통과 결과(JSONL)를 상대 비교해 개선/개악/차이 없음/아직 모름을 판정하는 판정 레이어. 천장·중간·바닥 층별 판정, QA 도중 멈춤/계속 신호, 돌리기 전 실행 수 계획을 지원한다.",
   "keywords": [
     "qa",
     "ab-comparison",
     "bayesian",
     "sequential-testing",
+    "stratified",
+    "early-stopping",
+    "sample-size-planning",
     "llm-workflow",
     "channel-talk"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "개선·개악 판별기",
-    "shortDescription": "수정 전/후 통과율의 상대 비교 판정 + 조기 종료로 QA 비용 절감",
-    "longDescription": "통과/실패 결과만 입력받아 Beta 사후분포와 ROPE로 improved / regressed / no_difference / undetermined 를 판정합니다. 기저 통과율로 층화(천장/바닥/중간)하고, 몬테카를로로 캘리브레이션된 문턱으로 배치마다 중간 판정을 내려 결론이 서면 조기 종료합니다. undetermined 일 때는 결론에 필요한 팔당 실행 수를 함께 냅니다. 표준 라이브러리만 사용하며 네트워크·LLM 호출이 없습니다.",
+    "shortDescription": "수정 전/후 통과율의 층별 상대 비교 판정 + QA 도중 조기 종료 신호 + 실행 수 계획",
+    "longDescription": "통과/실패 결과만 입력받아 Beta 사후분포와 ROPE로 improved / regressed / no_difference / undetermined 를 판정합니다. 시나리오를 양팔 합산 통과율로 천장·중간·바닥 층에 묶어, 주 판정은 개선 여지가 있는 중간층으로 내고 천장·바닥층의 개선·개악은 더 엄격한 문턱의 가드로 반영합니다(잘 되던 시나리오가 깨지거나 크게 고친 시나리오를 놓치지 않음). 몬테카를로로 캘리브레이션된 문턱으로 배치마다 중간 판정을 내리며, --online 으로 QA 도중 배치마다 부르면 멈춤/계속을 종료코드로 알려 실제로 LLM 호출을 아낍니다. --plan 은 돌리기 전에 설정별 검출률과 평균 멈춤 시점을 시뮬레이션해 캘리브레이션된 설정 중에서 권장합니다. undetermined 일 때는 결론에 필요한 팔당 실행 수를 함께 냅니다. 표준 라이브러리만 사용하며 네트워크·LLM 호출이 없습니다.",
     "defaultPrompt": [
       "verdict 스킬로 이 before/after 통과 결과 JSONL이 개선인지 개악인지 판정해줘.",
+      "verdict 스킬로 지금까지 돌린 QA 결과를 보고 더 돌려야 하는지 멈춰도 되는지 알려줘.",
+      "verdict 스킬로 통과율 60%짜리 시나리오 3개를 75%로 올리려는데 몇 번 돌려야 하는지 계획해줘.",
       "verdict 스킬의 합성 데이터 생성기로 데모 케이스를 만들어 판정까지 돌려줘."
     ]
   }

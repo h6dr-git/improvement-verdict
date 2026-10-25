@@ -2,7 +2,8 @@
 """
 synth.py — 개선·개악 판별기(verdict.py) 검증용 합성 데이터 생성기.
 
-SPEC §10의 8케이스를 생성한다. 실제 상담 데이터는 일절 쓰지 않는다(전부 합성).
+SPEC §10의 8케이스(v1)와 v2 검증 5케이스(9 층 희석된 개선, 10 천장층 개악 가드,
+11 온라인 멈춤 시점 일치, 12 계획 모드 검출률, 13 크게 고친 시나리오의 가드 개선)를 생성한다. 실제 상담 데이터는 일절 쓰지 않는다(전부 합성).
 표준 라이브러리만 사용한다(Python 3.9+). 네트워크·LLM 호출 없음.
 
 사용법:
@@ -232,7 +233,167 @@ CASES = {
             "18.44%가 실제로 억제되는지의 검증). --case 8은 데이터를 출력하지 않는다."
         ),
     },
+    # ------------------------- v2 추가 케이스 (9~13) -------------------------
+    9: {
+        "name": "masked-improvement",
+        "kind": "dataset",
+        "delta": 0.03,
+        "batch_size": 10,
+        "max_runs": 100,
+        "error_budget": 0.05,
+        "scenarios": None,  # _masked_scenarios() 로 채움
+        "expected": {
+            "verdict_in": ["undetermined"],
+            "headline_in": ["improved"],
+            "headline_basis": "middle",
+            "flags_required": ["overall_diluted"],
+            "scenario_strata": {"mid_1": "middle", "ceil_1": "ceiling", "floor_1": "floor"},
+            "error": False,
+            "early_stop": None,
+        },
+        "notes": (
+            "v2 층별 판정 케이스: 중간층 3개는 60%->75%로 확실히 좋아졌고, 천장(97%) 2개·바닥(5%) 2개는 그대로다. "
+            "v1의 전체 평균은 변화 없는 4개에 희석돼 최종 판정이 undetermined 에 머문다(순차 재생은 도착 순서에 따라 "
+            "중간에 개선으로 멈추기도 한다). v2 주 판정은 중간층 기준이라 improved 여야 하고 overall_diluted 플래그가 필수다. "
+            "(최종 판정은 통과 수만으로 정해져 시드와 무관하다. 조기 종료 여부는 도착 순서에 따라 드물게 달라져 케이스 11이 본다.)"
+        ),
+    },
+    10: {
+        "name": "guard-regression",
+        "kind": "dataset",
+        "delta": 0.03,
+        "batch_size": 10,
+        "max_runs": 100,
+        "error_budget": 0.05,
+        "scenarios": [
+            {"scenario_id": "mid_1", "n": 100, "before": {"rate": 0.60}, "after": {"rate": 0.60}},
+            {"scenario_id": "mid_2", "n": 100, "before": {"rate": 0.60}, "after": {"rate": 0.60}},
+            {"scenario_id": "ceil_1", "n": 100, "before": {"passes": 100}, "after": {"passes": 91}},
+            {"scenario_id": "ceil_2", "n": 100, "before": {"passes": 100}, "after": {"passes": 91}},
+            {"scenario_id": "ceil_3", "n": 100, "before": {"passes": 100}, "after": {"passes": 91}},
+            {"scenario_id": "ceil_4", "n": 100, "before": {"passes": 100}, "after": {"passes": 91}},
+        ],
+        "expected": {
+            "verdict_in": list(_ALL_VERDICTS),
+            "headline_in": ["regressed"],
+            "flags_required": ["guard_regressed"],
+            "scenario_strata": {"ceil_1": "ceiling", "mid_1": "middle"},
+            "error": False,
+            "early_stop": True,
+        },
+        "notes": (
+            "v2 가드 케이스: 고치려던 중간층은 그대로(60%)인데, 늘 통과하던 천장층 4개가 100%->91%로 조금씩 깨졌다. "
+            "두 팔 모두 90% 이상이라 이 시나리오들은 천장층에 남아 주 판정(중간층)에 들어가지 않는다. 그래서 천장층 평균의 "
+            "개악이 가드 문턱으로 확정되면 주 판정이 regressed 로 올라가고 guard_regressed 플래그와 함께 조기 종료가 "
+            "걸려야 한다. (99%->89%처럼 90% 밑으로 떨어지는 고장은 중간층으로 들어와 주 판정이 직접 잡는다.)"
+        ),
+    },
+    11: {
+        "name": "online-consistency",
+        "kind": "online",
+        "delta": 0.03,
+        "batch_size": 10,
+        "max_runs": 100,
+        "error_budget": 0.05,
+        "scenarios": None,  # _masked_scenarios() 로 채움
+        "expected": {
+            "verdict_in": list(_ALL_VERDICTS),
+            "headline_in": ["improved"],
+            "headline_basis": "middle",
+            "flags_required": [],
+            "error": False,
+            "early_stop": True,
+        },
+        "notes": (
+            "v2 온라인 모드 일치 검증: 케이스 9와 같은 구성(단 중간층은 55%->85%로 효과를 키워 어떤 시드에서도 max_runs 전에 "
+            "멈추게 함)을 오프라인으로 판정해 멈춘 시점 T를 구한 뒤, "
+            "데이터 앞부분만 --online 으로 넣는다. 팔당 T-batch 회까지는 종료코드 0(계속), 팔당 T회에서 10(개선 확정)이어야 한다 "
+            "— QA 도중 배치마다 부르는 온라인 판정과 다 돌린 뒤의 재생이 같은 시점에 멈춘다는 보장."
+        ),
+    },
+    12: {
+        "name": "plan-consistency",
+        "kind": "plan",
+        "delta": 0.03,
+        "batch_size": 10,
+        "max_runs": 100,
+        "error_budget": 0.05,
+        "scenarios": [],
+        "plan": {"base": 0.62, "target": 0.75, "scenarios": 1, "sims": 400, "power": 0.8},
+        # 바뀔 시나리오가 천장층에 묶이는 경우: 가드 경로로 계산해야 한다(중간층 평균에 묽히면 7%로 과소추정).
+        # 참고 검출률 0.225 = research/v2_validation.py 의 시나리오별 판정 규칙 시뮬레이션(2,000회, batch 10 / max 100).
+        "plan_guard": {"base": 0.85, "target": 0.97, "scenarios": 1, "unchanged_middle": 2, "sims": 400,
+                       "power": 0.8, "decision_path": "guard", "reference_power": [10, 100, 0.225]},
+        "expected": {
+            "verdict_in": [],
+            "flags_required": [],
+            "error": False,
+            "early_stop": None,
+            "power_tolerance": 0.10,
+            "recommended": [20, 400],
+        },
+        "notes": (
+            "v2 계획 모드 검증: 62%->75%, 시나리오 1개, delta 0.03 으로 --plan 을 돌려 설정별 검출률이 "
+            "calibration-default.json 에 기록된 검정력(power_62_75: batch10/max100 0.345, batch20/max400 0.8375)과 "
+            "몬테카를로 오차(±0.10) 안에서 일치하고, 목표 검출률 80%에서 batch 20 / max 400 을 권장해야 한다. "
+            "또 85%->97%(양팔 합산 기대 91%, 천장층) + 그대로인 중간층 2개는 가드 경로로 계산해 batch10/max100 검출률이 "
+            "시나리오별 판정 규칙 시뮬레이션 값(0.225)과 ±0.10 안이어야 한다. 데이터를 출력하지 않는다."
+        ),
+    },
+    13: {
+        "name": "big-fix-guard",
+        "kind": "dataset",
+        "delta": 0.03,
+        "batch_size": 10,
+        "max_runs": 100,
+        "error_budget": 0.05,
+        "scenarios": [
+            {"scenario_id": "fix_1", "n": 100, "before": {"passes": 85}, "after": {"passes": 99}},
+            {"scenario_id": "fix_2", "n": 100, "before": {"passes": 85}, "after": {"passes": 99}},
+            {"scenario_id": "fix_3", "n": 100, "before": {"passes": 85}, "after": {"passes": 99}},
+            {"scenario_id": "rescue_1", "n": 100, "before": {"passes": 0}, "after": {"passes": 20}},
+            {"scenario_id": "same_1", "n": 100, "before": {"rate": 0.50}, "after": {"rate": 0.50}},
+            {"scenario_id": "ceil_1", "n": 100, "before": {"passes": 97}, "after": {"passes": 97}},
+            {"scenario_id": "ceil_2", "n": 100, "before": {"passes": 97}, "after": {"passes": 97}},
+        ],
+        "expected": {
+            "verdict_in": list(_ALL_VERDICTS),
+            "headline_in": ["improved"],
+            "headline_basis": "middle",
+            "flags_required": ["guard_improved"],
+            "scenario_strata": {"fix_1": "ceiling", "rescue_1": "floor", "same_1": "middle", "ceil_1": "ceiling"},
+            "scenario_flags_absent": {"fix_1": ["ceiling"], "rescue_1": ["floor", "not_task_fixable"]},
+            "error": False,
+            # 순차 재생의 멈춤은 기대하지 않는다 — 그대로인 50% 중간층 하나가 도착 순서에 따라 거짓 양성으로 먼저
+            # 멈출 수 있다(효과 없는 층의 거짓 양성률 범위, 그때는 replay_conflict 경고).
+            "early_stop": None,
+        },
+        "notes": (
+            "v2 가드 개선 케이스(검토에서 찾은 결함의 회귀 방지): 85%->99%로 크게 고친 시나리오는 양팔 합산 통과율이 높아 "
+            "천장층에, 0%->20%로 살린 시나리오는 바닥층에 묶인다. 주 판정 근거(중간층 = 그대로인 50% 하나)만 보면 개선을 "
+            "놓치므로, 천장·바닥층 평균의 개선이 가드 문턱으로 확정되면 주 판정이 improved 로 올라가야 한다(guard_improved). "
+            "또 이 시나리오들에 '개선 여지가 작다'(ceiling)·'태스크 수정으로 풀 문제가 아니다'(not_task_fixable) 같은 "
+            "해석 플래그가 붙으면 안 된다 — 그 플래그는 수정 전후 두 팔이 모두 극단일 때만 붙는다."
+        ),
+    },
 }
+
+
+def _masked_scenarios(mid_before=0.60, mid_after=0.75):
+    """케이스 9·11: 중간층 3개만 개선(기본 60->75%), 천장 2개·바닥 2개는 그대로."""
+    out = []
+    for i in range(1, 4):
+        out.append({"scenario_id": "mid_%d" % i, "n": 100, "before": {"rate": mid_before}, "after": {"rate": mid_after}})
+    for i in range(1, 3):
+        out.append({"scenario_id": "ceil_%d" % i, "n": 100, "before": {"passes": 97}, "after": {"passes": 97}})
+    for i in range(1, 3):
+        out.append({"scenario_id": "floor_%d" % i, "n": 100, "before": {"passes": 5}, "after": {"passes": 5}})
+    return out
+
+
+CASES[9]["scenarios"] = _masked_scenarios()
+# 케이스 11은 온라인·오프라인 일치를 보는 케이스라, 어떤 도착 순서(시드)에서도 max_runs 전에 멈추도록 효과를 키운다
+CASES[11]["scenarios"] = _masked_scenarios(mid_before=0.55, mid_after=0.85)
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +460,10 @@ def build_meta(case_no):
         "expected": spec["expected"],
         "notes": spec["notes"],
     }
+    if "plan" in spec:
+        meta["plan"] = spec["plan"]
+    if "plan_guard" in spec:
+        meta["plan_guard"] = spec["plan_guard"]
     return meta
 
 
@@ -309,7 +474,7 @@ def build_meta(case_no):
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="synth.py",
-        description="개선·개악 판별기 검증용 합성 데이터 생성기 (SPEC §10의 8케이스, 전부 합성 데이터)",
+        description="개선·개악 판별기 검증용 합성 데이터 생성기 (v1 8케이스 + v2 4케이스, 전부 합성 데이터)",
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--case", type=int, metavar="N", help="케이스 N의 JSONL을 stdout으로")
@@ -326,7 +491,7 @@ def main(argv=None):
 
     case_no = args.case if args.case is not None else args.meta
     if case_no not in CASES:
-        sys.stderr.write("오류: 케이스 번호는 1..8 이어야 합니다 (받은 값: {0})\n".format(case_no))
+        sys.stderr.write("오류: 케이스 번호는 1..{0} 이어야 합니다 (받은 값: {1})\n".format(max(CASES), case_no))
         return 2
 
     if args.meta is not None:
@@ -339,6 +504,13 @@ def main(argv=None):
             "케이스 8은 데이터셋이 아니라 캘리브레이션 자기검증입니다.\n"
             "calibrate.py 빠른 모드를 --meta 8 의 설정으로 실행해 조기 종료 경계가\n"
             "error_budget을 실제로 지키는지 확인하세요. (stdout에는 데이터가 없습니다)\n"
+        )
+        return 0
+    if CASES[case_no]["kind"] == "plan":
+        sys.stderr.write(
+            "케이스 {0}는 데이터셋이 아니라 계획 모드 자기검증입니다.\n"
+            "verdict.py --plan 을 --meta {0} 의 plan 설정으로 실행해 검출률이 캘리브레이션 기록과\n"
+            "맞는지 확인하세요. (stdout에는 데이터가 없습니다)\n".format(case_no)
         )
         return 0
 

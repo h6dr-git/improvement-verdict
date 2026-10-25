@@ -17,10 +17,28 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: selftest (합성 8케이스)
+      - name: selftest (합성 13케이스)
         run: python3 src/scripts/verdict.py --selftest
-      - name: demo (improved / regressed / undetermined)
+      - name: demo (improved / regressed / undetermined / 층별 판정)
         run: |
           python3 src/scripts/synth.py --case 2 | python3 src/scripts/verdict.py - --delta 0.03 --batch-size 20 --max-runs 400 --yes
           python3 src/scripts/synth.py --case 3 | python3 src/scripts/verdict.py - --delta 0.03 --batch-size 20 --max-runs 400 --yes
           python3 src/scripts/synth.py --case 1 | python3 src/scripts/verdict.py - --delta 0.03 --yes
+          python3 src/scripts/synth.py --case 9 | python3 src/scripts/verdict.py - --delta 0.03 --yes
+          python3 src/scripts/synth.py --case 13 | python3 src/scripts/verdict.py - --delta 0.03 --yes
+      - name: demo (온라인 모드 — 배치마다 불러 멈춤 시점에서 끝나는지)
+        run: |
+          python3 src/scripts/synth.py --case 11 > runs.jsonl
+          rc=0
+          for n in 10 20 30 40 50 60 70 80 90 100; do
+            head -n $((n * 14)) runs.jsonl > partial.jsonl
+            python3 src/scripts/verdict.py partial.jsonl --delta 0.03 --online && continue
+            rc=$?
+            echo "멈춤: 팔당 ${n}회, 종료코드 ${rc}"
+            break
+          done
+          test "$rc" -eq 10
+      - name: demo (계획 모드 — 중간층 평균 / 천장층 가드 경로)
+        run: |
+          python3 src/scripts/verdict.py --plan --base 0.60 --target 0.75 --scenarios 3 --unchanged-middle 1 --delta 0.03
+          python3 src/scripts/verdict.py --plan --base 0.85 --target 0.97 --scenarios 1 --unchanged-middle 2 --delta 0.03
