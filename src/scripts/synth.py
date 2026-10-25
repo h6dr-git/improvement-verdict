@@ -2,7 +2,8 @@
 """
 synth.py — 개선·개악 판별기(verdict.py) 검증용 합성 데이터 생성기.
 
-SPEC §10의 8케이스를 생성한다. 실제 상담 데이터는 일절 쓰지 않는다(전부 합성).
+SPEC §10의 8케이스(v1)와 v2 검증 4케이스(9 층 희석된 개선, 10 천장층 개악 가드,
+11 온라인 멈춤 시점 일치, 12 계획 모드 검출률)를 생성한다. 실제 상담 데이터는 일절 쓰지 않는다(전부 합성).
 표준 라이브러리만 사용한다(Python 3.9+). 네트워크·LLM 호출 없음.
 
 사용법:
@@ -232,7 +233,120 @@ CASES = {
             "18.44%가 실제로 억제되는지의 검증). --case 8은 데이터를 출력하지 않는다."
         ),
     },
+    # ------------------------- v2 추가 케이스 (9~12) -------------------------
+    9: {
+        "name": "masked-improvement",
+        "kind": "dataset",
+        "delta": 0.03,
+        "batch_size": 10,
+        "max_runs": 100,
+        "error_budget": 0.05,
+        "scenarios": None,  # _masked_scenarios() 로 채움
+        "expected": {
+            "verdict_in": ["undetermined"],
+            "headline_in": ["improved"],
+            "headline_basis": "middle",
+            "flags_required": ["overall_diluted"],
+            "scenario_strata": {"mid_1": "middle", "ceil_1": "ceiling", "floor_1": "floor"},
+            "error": False,
+            "early_stop": True,
+        },
+        "notes": (
+            "v2 층별 판정 케이스: 중간층 3개는 60%->75%로 확실히 좋아졌고, 천장(97%) 2개·바닥(5%) 2개는 그대로다. "
+            "v1의 전체 평균은 변화 없는 4개에 희석돼 undetermined 에 머물지만(조기 종료도 없음), "
+            "v2 주 판정은 중간층 기준이라 improved 이고 조기 종료가 걸려야 한다. overall_diluted 플래그 필수."
+        ),
+    },
+    10: {
+        "name": "guard-regression",
+        "kind": "dataset",
+        "delta": 0.03,
+        "batch_size": 10,
+        "max_runs": 100,
+        "error_budget": 0.05,
+        "scenarios": [
+            {"scenario_id": "mid_1", "n": 100, "before": {"rate": 0.60}, "after": {"rate": 0.60}},
+            {"scenario_id": "mid_2", "n": 100, "before": {"rate": 0.60}, "after": {"rate": 0.60}},
+            {"scenario_id": "ceil_1", "n": 100, "before": {"passes": 99}, "after": {"passes": 89}},
+            {"scenario_id": "ceil_2", "n": 100, "before": {"passes": 99}, "after": {"passes": 89}},
+            {"scenario_id": "ceil_3", "n": 100, "before": {"passes": 99}, "after": {"passes": 89}},
+        ],
+        "expected": {
+            "verdict_in": list(_ALL_VERDICTS),
+            "headline_in": ["regressed"],
+            "flags_required": ["guard_regressed"],
+            "scenario_strata": {"ceil_1": "ceiling", "mid_1": "middle"},
+            "error": False,
+            "early_stop": True,
+        },
+        "notes": (
+            "v2 가드 케이스: 고치려던 중간층은 그대로(60%)인데, 잘 되던 천장층 3개가 99%->89%로 깨졌다. "
+            "주 판정 근거(중간층)만 보면 놓치므로, 천장층 개악이 확정되면 주 판정이 regressed 로 올라가고 "
+            "guard_regressed 플래그와 함께 조기 종료(즉시 중단)가 걸려야 한다."
+        ),
+    },
+    11: {
+        "name": "online-consistency",
+        "kind": "online",
+        "delta": 0.03,
+        "batch_size": 10,
+        "max_runs": 100,
+        "error_budget": 0.05,
+        "scenarios": None,  # _masked_scenarios() 로 채움
+        "expected": {
+            "verdict_in": ["undetermined"],
+            "headline_in": ["improved"],
+            "flags_required": ["overall_diluted"],
+            "error": False,
+            "early_stop": True,
+        },
+        "notes": (
+            "v2 온라인 모드 일치 검증: 케이스 9와 같은 구성(시드만 다름)을 오프라인으로 판정해 멈춘 시점 T를 구한 뒤, "
+            "데이터 앞부분만 --online 으로 넣는다. 팔당 T-batch 회까지는 종료코드 0(계속), 팔당 T회에서 10(개선 확정)이어야 한다 "
+            "— QA 도중 배치마다 부르는 온라인 판정과 다 돌린 뒤의 재생이 같은 시점에 멈춘다는 보장."
+        ),
+    },
+    12: {
+        "name": "plan-consistency",
+        "kind": "plan",
+        "delta": 0.03,
+        "batch_size": 10,
+        "max_runs": 100,
+        "error_budget": 0.05,
+        "scenarios": [],
+        "plan": {"base": 0.62, "target": 0.75, "scenarios": 1, "sims": 400, "power": 0.8},
+        "expected": {
+            "verdict_in": [],
+            "flags_required": [],
+            "error": False,
+            "early_stop": None,
+            "power_tolerance": 0.10,
+            "recommended": [20, 400],
+        },
+        "notes": (
+            "v2 계획 모드 검증: 62%->75%, 시나리오 1개, delta 0.03 으로 --plan 을 돌려 설정별 검출률이 "
+            "calibration-default.json 에 기록된 검정력(power_62_75: batch10/max100 0.345, batch20/max400 0.8375)과 "
+            "몬테카를로 오차(±0.10) 안에서 일치하고, 목표 검출률 80%에서 batch 20 / max 400 을 권장해야 한다. "
+            "데이터를 출력하지 않는다."
+        ),
+    },
 }
+
+
+def _masked_scenarios():
+    """케이스 9·11: 중간층 3개만 개선(60->75%), 천장 2개·바닥 2개는 그대로."""
+    out = []
+    for i in range(1, 4):
+        out.append({"scenario_id": "mid_%d" % i, "n": 100, "before": {"rate": 0.60}, "after": {"rate": 0.75}})
+    for i in range(1, 3):
+        out.append({"scenario_id": "ceil_%d" % i, "n": 100, "before": {"passes": 97}, "after": {"passes": 97}})
+    for i in range(1, 3):
+        out.append({"scenario_id": "floor_%d" % i, "n": 100, "before": {"passes": 5}, "after": {"passes": 5}})
+    return out
+
+
+CASES[9]["scenarios"] = _masked_scenarios()
+CASES[11]["scenarios"] = _masked_scenarios()
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +413,8 @@ def build_meta(case_no):
         "expected": spec["expected"],
         "notes": spec["notes"],
     }
+    if "plan" in spec:
+        meta["plan"] = spec["plan"]
     return meta
 
 
@@ -309,7 +425,7 @@ def build_meta(case_no):
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="synth.py",
-        description="개선·개악 판별기 검증용 합성 데이터 생성기 (SPEC §10의 8케이스, 전부 합성 데이터)",
+        description="개선·개악 판별기 검증용 합성 데이터 생성기 (v1 8케이스 + v2 4케이스, 전부 합성 데이터)",
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--case", type=int, metavar="N", help="케이스 N의 JSONL을 stdout으로")
@@ -326,7 +442,7 @@ def main(argv=None):
 
     case_no = args.case if args.case is not None else args.meta
     if case_no not in CASES:
-        sys.stderr.write("오류: 케이스 번호는 1..8 이어야 합니다 (받은 값: {0})\n".format(case_no))
+        sys.stderr.write("오류: 케이스 번호는 1..{0} 이어야 합니다 (받은 값: {1})\n".format(max(CASES), case_no))
         return 2
 
     if args.meta is not None:
@@ -339,6 +455,13 @@ def main(argv=None):
             "케이스 8은 데이터셋이 아니라 캘리브레이션 자기검증입니다.\n"
             "calibrate.py 빠른 모드를 --meta 8 의 설정으로 실행해 조기 종료 경계가\n"
             "error_budget을 실제로 지키는지 확인하세요. (stdout에는 데이터가 없습니다)\n"
+        )
+        return 0
+    if CASES[case_no]["kind"] == "plan":
+        sys.stderr.write(
+            "케이스 {0}는 데이터셋이 아니라 계획 모드 자기검증입니다.\n"
+            "verdict.py --plan 을 --meta {0} 의 plan 설정으로 실행해 검출률이 캘리브레이션 기록과\n"
+            "맞는지 확인하세요. (stdout에는 데이터가 없습니다)\n".format(case_no)
         )
         return 0
 

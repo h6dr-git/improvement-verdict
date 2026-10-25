@@ -14,6 +14,7 @@
    캘리브레이션 delta 보다 작으면 보장이 근사로 약해진다고 경고한다.)
 - 재생에 futility 중단을 넣지 않는다: futility 는 improved/regressed 를 내지 않으므로
   이를 뺀 시뮬레이션 FPR 은 실제 FPR 의 상한이다(보수 방향).
+- plan_paths(): verdict.py --plan 용 순차 판정 시뮬레이션(같은 prob_diff·같은 문턱) — 검출률·평균 멈춤 시점.
 """
 import argparse
 import json
@@ -63,6 +64,58 @@ def replay_paths(batch, max_runs, p_before, p_after, sims, seed, delta):
                 break  # 그리드 최고 문턱(0.995)을 이미 넘었다 — 남은 체크포인트는 결과 불변
         out.append((mx, mx_imp))
     return out
+
+
+def plan_paths(batch, max_runs, p_before, p_after, scenarios, sims, seed, delta, threshold):
+    """계획 모드(verdict.py --plan)용 순차 판정 시뮬레이션.
+
+    같은 기저율의 시나리오 K개를 체크포인트마다 실행 수를 합친 단일 시나리오로 근사한다
+    (K개 평균 차이의 사후분포와 합친 단일 시나리오의 사후분포는 분산이 같아지는 근사 —
+    K=1 이면 판정 경로가 verdict.py 와 정확히 같다). 첫 확정(improved/regressed)에서 멈추고
+    futility 는 넣지 않는다(평균 실행 수는 상한 쪽).
+    '검출'은 기대 방향의 확정이다 — p_after > p_before 면 improved, 작으면 regressed.
+    반환: 검출률, 반대 방향 오판율, 검출 시 평균 멈춤(팔당), 전체 평균 실행 수(팔당).
+    """
+    ncheck = max_runs // batch
+    nb = batch * scenarios
+    want = "regressed" if p_after < p_before else "improved"
+    cdf_b = _stats.binom_cdf_table(nb, p_before)
+    cdf_a = _stats.binom_cdf_table(nb, p_after)
+    rng = random.Random(seed)
+    draw = _stats.binom_draw
+    pdiff = _stats.prob_diff
+    detected = wrong = 0
+    stop_sum = 0
+    runs_sum = 0
+    for _ in range(sims):
+        kb = ka = n = 0
+        outcome = None
+        for c in range(1, ncheck + 1):
+            kb += draw(rng, cdf_b)
+            ka += draw(rng, cdf_a)
+            n += nb
+            p_imp, p_reg, _ = pdiff(kb, n, ka, n, delta)
+            if p_imp >= threshold:
+                outcome = ("improved", c * batch)
+                break
+            if p_reg >= threshold:
+                outcome = ("regressed", c * batch)
+                break
+        if outcome is None:
+            runs_sum += ncheck * batch
+        else:
+            runs_sum += outcome[1]
+            if outcome[0] == want:
+                detected += 1
+                stop_sum += outcome[1]
+            else:
+                wrong += 1
+    return {"direction": want,
+            "power": round(detected / float(sims), 4),
+            "wrong_direction": round(wrong / float(sims), 4),
+            "mean_stop_when_detected": (round(stop_sum / float(detected), 1) if detected else None),
+            "expected_runs_per_arm": round(runs_sum / float(sims), 1),
+            "sims": sims}
 
 
 def calibrate_config(batch, max_runs, budget, base, sims, seed, delta):
