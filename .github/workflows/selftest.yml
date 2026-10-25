@@ -17,7 +17,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: selftest (합성 12케이스)
+      - name: selftest (합성 13케이스)
         run: python3 src/scripts/verdict.py --selftest
       - name: demo (improved / regressed / undetermined / 층별 판정)
         run: |
@@ -25,6 +25,7 @@ jobs:
           python3 src/scripts/synth.py --case 3 | python3 src/scripts/verdict.py - --delta 0.03 --batch-size 20 --max-runs 400 --yes
           python3 src/scripts/synth.py --case 1 | python3 src/scripts/verdict.py - --delta 0.03 --yes
           python3 src/scripts/synth.py --case 9 | python3 src/scripts/verdict.py - --delta 0.03 --yes
+          python3 src/scripts/synth.py --case 13 | python3 src/scripts/verdict.py - --delta 0.03 --yes
       - name: demo (온라인 모드 — 배치마다 불러 멈춤 시점에서 끝나는지)
         run: |
           python3 src/scripts/synth.py --case 11 > runs.jsonl
@@ -38,4 +39,4 @@ jobs:
           done
           test "$rc" -eq 10
       - name: demo (계획 모드)
-        run: python3 src/scripts/verdict.py --plan --base 0.60 --target 0.75 --scenarios 3 --delta 0.03
+        run: python3 src/scripts/verdict.py --plan --base 0.60 --target 0.75 --scenarios 3 --unchanged-middle 1 --delta 0.03

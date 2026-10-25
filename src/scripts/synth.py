@@ -2,8 +2,8 @@
 """
 synth.py — 개선·개악 판별기(verdict.py) 검증용 합성 데이터 생성기.
 
-SPEC §10의 8케이스(v1)와 v2 검증 4케이스(9 층 희석된 개선, 10 천장층 개악 가드,
-11 온라인 멈춤 시점 일치, 12 계획 모드 검출률)를 생성한다. 실제 상담 데이터는 일절 쓰지 않는다(전부 합성).
+SPEC §10의 8케이스(v1)와 v2 검증 5케이스(9 층 희석된 개선, 10 천장층 개악 가드,
+11 온라인 멈춤 시점 일치, 12 계획 모드 검출률, 13 크게 고친 시나리오의 가드 개선)를 생성한다. 실제 상담 데이터는 일절 쓰지 않는다(전부 합성).
 표준 라이브러리만 사용한다(Python 3.9+). 네트워크·LLM 호출 없음.
 
 사용법:
@@ -233,7 +233,7 @@ CASES = {
             "18.44%가 실제로 억제되는지의 검증). --case 8은 데이터를 출력하지 않는다."
         ),
     },
-    # ------------------------- v2 추가 케이스 (9~12) -------------------------
+    # ------------------------- v2 추가 케이스 (9~13) -------------------------
     9: {
         "name": "masked-improvement",
         "kind": "dataset",
@@ -253,8 +253,9 @@ CASES = {
         },
         "notes": (
             "v2 층별 판정 케이스: 중간층 3개는 60%->75%로 확실히 좋아졌고, 천장(97%) 2개·바닥(5%) 2개는 그대로다. "
-            "v1의 전체 평균은 변화 없는 4개에 희석돼 undetermined 에 머물지만(조기 종료도 없음), "
-            "v2 주 판정은 중간층 기준이라 improved 이고 조기 종료가 걸려야 한다. overall_diluted 플래그 필수."
+            "v1의 전체 평균은 변화 없는 4개에 희석돼 최종 판정이 undetermined 에 머문다(순차 재생은 도착 순서에 따라 "
+            "중간에 개선으로 멈추기도 한다). v2 주 판정은 중간층 기준이라 improved 이고 조기 종료가 걸려야 한다. "
+            "overall_diluted 플래그 필수."
         ),
     },
     10: {
@@ -267,9 +268,10 @@ CASES = {
         "scenarios": [
             {"scenario_id": "mid_1", "n": 100, "before": {"rate": 0.60}, "after": {"rate": 0.60}},
             {"scenario_id": "mid_2", "n": 100, "before": {"rate": 0.60}, "after": {"rate": 0.60}},
-            {"scenario_id": "ceil_1", "n": 100, "before": {"passes": 99}, "after": {"passes": 89}},
-            {"scenario_id": "ceil_2", "n": 100, "before": {"passes": 99}, "after": {"passes": 89}},
-            {"scenario_id": "ceil_3", "n": 100, "before": {"passes": 99}, "after": {"passes": 89}},
+            {"scenario_id": "ceil_1", "n": 100, "before": {"passes": 100}, "after": {"passes": 91}},
+            {"scenario_id": "ceil_2", "n": 100, "before": {"passes": 100}, "after": {"passes": 91}},
+            {"scenario_id": "ceil_3", "n": 100, "before": {"passes": 100}, "after": {"passes": 91}},
+            {"scenario_id": "ceil_4", "n": 100, "before": {"passes": 100}, "after": {"passes": 91}},
         ],
         "expected": {
             "verdict_in": list(_ALL_VERDICTS),
@@ -280,9 +282,10 @@ CASES = {
             "early_stop": True,
         },
         "notes": (
-            "v2 가드 케이스: 고치려던 중간층은 그대로(60%)인데, 잘 되던 천장층 3개가 99%->89%로 깨졌다. "
-            "주 판정 근거(중간층)만 보면 놓치므로, 천장층 개악이 확정되면 주 판정이 regressed 로 올라가고 "
-            "guard_regressed 플래그와 함께 조기 종료(즉시 중단)가 걸려야 한다."
+            "v2 가드 케이스: 고치려던 중간층은 그대로(60%)인데, 늘 통과하던 천장층 4개가 100%->91%로 조금씩 깨졌다. "
+            "두 팔 모두 90% 이상이라 이 시나리오들은 천장층에 남아 주 판정(중간층)에 들어가지 않는다. 그래서 천장층 평균의 "
+            "개악이 가드 문턱으로 확정되면 주 판정이 regressed 로 올라가고 guard_regressed 플래그와 함께 조기 종료가 "
+            "걸려야 한다. (99%->89%처럼 90% 밑으로 떨어지는 고장은 중간층으로 들어와 주 판정이 직접 잡는다.)"
         ),
     },
     11: {
@@ -328,6 +331,40 @@ CASES = {
             "calibration-default.json 에 기록된 검정력(power_62_75: batch10/max100 0.345, batch20/max400 0.8375)과 "
             "몬테카를로 오차(±0.10) 안에서 일치하고, 목표 검출률 80%에서 batch 20 / max 400 을 권장해야 한다. "
             "데이터를 출력하지 않는다."
+        ),
+    },
+    13: {
+        "name": "big-fix-guard",
+        "kind": "dataset",
+        "delta": 0.03,
+        "batch_size": 10,
+        "max_runs": 100,
+        "error_budget": 0.05,
+        "scenarios": [
+            {"scenario_id": "fix_1", "n": 100, "before": {"passes": 85}, "after": {"passes": 99}},
+            {"scenario_id": "fix_2", "n": 100, "before": {"passes": 85}, "after": {"passes": 99}},
+            {"scenario_id": "fix_3", "n": 100, "before": {"passes": 85}, "after": {"passes": 99}},
+            {"scenario_id": "rescue_1", "n": 100, "before": {"passes": 0}, "after": {"passes": 20}},
+            {"scenario_id": "same_1", "n": 100, "before": {"rate": 0.50}, "after": {"rate": 0.50}},
+            {"scenario_id": "ceil_1", "n": 100, "before": {"passes": 97}, "after": {"passes": 97}},
+            {"scenario_id": "ceil_2", "n": 100, "before": {"passes": 97}, "after": {"passes": 97}},
+        ],
+        "expected": {
+            "verdict_in": list(_ALL_VERDICTS),
+            "headline_in": ["improved"],
+            "headline_basis": "middle",
+            "flags_required": ["guard_improved"],
+            "scenario_strata": {"fix_1": "ceiling", "rescue_1": "floor", "same_1": "middle", "ceil_1": "ceiling"},
+            "scenario_flags_absent": {"fix_1": ["ceiling"], "rescue_1": ["floor", "not_task_fixable"]},
+            "error": False,
+            "early_stop": True,
+        },
+        "notes": (
+            "v2 가드 개선 케이스(검토에서 찾은 결함의 회귀 방지): 85%->99%로 크게 고친 시나리오는 양팔 합산 통과율이 높아 "
+            "천장층에, 0%->20%로 살린 시나리오는 바닥층에 묶인다. 주 판정 근거(중간층 = 그대로인 50% 하나)만 보면 개선을 "
+            "놓치므로, 천장·바닥층 평균의 개선이 가드 문턱으로 확정되면 주 판정이 improved 로 올라가야 한다(guard_improved). "
+            "또 이 시나리오들에 '개선 여지가 작다'(ceiling)·'태스크 수정으로 풀 문제가 아니다'(not_task_fixable) 같은 "
+            "해석 플래그가 붙으면 안 된다 — 그 플래그는 수정 전후 두 팔이 모두 극단일 때만 붙는다."
         ),
     },
 }
