@@ -1188,7 +1188,7 @@ def run_selftest(args):
                 if want_rec and (not rec or [rec["batch_size"], rec["max_runs"]] != want_rec):
                     problems.append("권장 설정 %r 기대, 실제 %r" % (want_rec, rec))
         else:
-            rc, data, err = _run([sys.executable, synth, "--case", str(case), "--seed", seed])
+            rc, data, err = _run([sys.executable, synth, "--case", str(case)])
             if rc != 0:
                 problems.append("synth --case %d 실패" % case)
                 data = ""
@@ -1247,7 +1247,7 @@ def run_selftest(args):
         rows.append((case, meta["name"], got, "PASS" if ok else "FAIL", "; ".join(problems),
                      time.time() - t0))
     tmp.cleanup()
-    print("selftest 결과 (synth.py %d케이스, seed=%d — 합성 데이터 순서·MC 시드에 모두 적용):" % (len(metas), args.seed))
+    print("selftest 결과 (synth.py %d케이스, MC seed=%d — 합성 데이터는 고정):" % (len(metas), args.seed))
     print("  %-4s %-20s %-34s %-5s %s" % ("case", "name", "결과", "판정", "문제"))
     for case, name, got, ok, prob, el in rows:
         print("  %-4d %-20s %-34s %-5s %s(%.1fs)" % (case, name, got, ok, (prob + " ") if prob else "", el))

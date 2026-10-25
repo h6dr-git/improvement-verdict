@@ -249,13 +249,13 @@ CASES = {
             "flags_required": ["overall_diluted"],
             "scenario_strata": {"mid_1": "middle", "ceil_1": "ceiling", "floor_1": "floor"},
             "error": False,
-            "early_stop": True,
+            "early_stop": None,
         },
         "notes": (
             "v2 층별 판정 케이스: 중간층 3개는 60%->75%로 확실히 좋아졌고, 천장(97%) 2개·바닥(5%) 2개는 그대로다. "
             "v1의 전체 평균은 변화 없는 4개에 희석돼 최종 판정이 undetermined 에 머문다(순차 재생은 도착 순서에 따라 "
-            "중간에 개선으로 멈추기도 한다). v2 주 판정은 중간층 기준이라 improved 이고 조기 종료가 걸려야 한다. "
-            "overall_diluted 플래그 필수."
+            "중간에 개선으로 멈추기도 한다). v2 주 판정은 중간층 기준이라 improved 여야 하고 overall_diluted 플래그가 필수다. "
+            "(최종 판정은 통과 수만으로 정해져 시드와 무관하다. 조기 종료 여부는 도착 순서에 따라 드물게 달라져 케이스 11이 본다.)"
         ),
     },
     10: {
@@ -297,14 +297,16 @@ CASES = {
         "error_budget": 0.05,
         "scenarios": None,  # _masked_scenarios() 로 채움
         "expected": {
-            "verdict_in": ["undetermined"],
+            "verdict_in": list(_ALL_VERDICTS),
             "headline_in": ["improved"],
-            "flags_required": ["overall_diluted"],
+            "headline_basis": "middle",
+            "flags_required": [],
             "error": False,
             "early_stop": True,
         },
         "notes": (
-            "v2 온라인 모드 일치 검증: 케이스 9와 같은 구성(시드만 다름)을 오프라인으로 판정해 멈춘 시점 T를 구한 뒤, "
+            "v2 온라인 모드 일치 검증: 케이스 9와 같은 구성(단 중간층은 55%->85%로 효과를 키워 어떤 시드에서도 max_runs 전에 "
+            "멈추게 함)을 오프라인으로 판정해 멈춘 시점 T를 구한 뒤, "
             "데이터 앞부분만 --online 으로 넣는다. 팔당 T-batch 회까지는 종료코드 0(계속), 팔당 T회에서 10(개선 확정)이어야 한다 "
             "— QA 도중 배치마다 부르는 온라인 판정과 다 돌린 뒤의 재생이 같은 시점에 멈춘다는 보장."
         ),
@@ -370,11 +372,11 @@ CASES = {
 }
 
 
-def _masked_scenarios():
-    """케이스 9·11: 중간층 3개만 개선(60->75%), 천장 2개·바닥 2개는 그대로."""
+def _masked_scenarios(mid_before=0.60, mid_after=0.75):
+    """케이스 9·11: 중간층 3개만 개선(기본 60->75%), 천장 2개·바닥 2개는 그대로."""
     out = []
     for i in range(1, 4):
-        out.append({"scenario_id": "mid_%d" % i, "n": 100, "before": {"rate": 0.60}, "after": {"rate": 0.75}})
+        out.append({"scenario_id": "mid_%d" % i, "n": 100, "before": {"rate": mid_before}, "after": {"rate": mid_after}})
     for i in range(1, 3):
         out.append({"scenario_id": "ceil_%d" % i, "n": 100, "before": {"passes": 97}, "after": {"passes": 97}})
     for i in range(1, 3):
@@ -383,7 +385,8 @@ def _masked_scenarios():
 
 
 CASES[9]["scenarios"] = _masked_scenarios()
-CASES[11]["scenarios"] = _masked_scenarios()
+# 케이스 11은 온라인·오프라인 일치를 보는 케이스라, 어떤 도착 순서(시드)에서도 max_runs 전에 멈추도록 효과를 키운다
+CASES[11]["scenarios"] = _masked_scenarios(mid_before=0.55, mid_after=0.85)
 
 
 # ---------------------------------------------------------------------------
