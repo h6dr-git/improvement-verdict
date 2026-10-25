@@ -2,7 +2,7 @@
 
 [![selftest](https://github.com/h6dr-git/improvement-verdict/actions/workflows/selftest.yml/badge.svg)](https://github.com/h6dr-git/improvement-verdict/actions/workflows/selftest.yml) ![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white) ![표준 라이브러리만](https://img.shields.io/badge/dependencies-none-lightgrey) [![MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-> **AX 인재전쟁 1기 (채널톡 트랙) 예선 제출작** · 2026-07-10 제출 · 예선 등록 5,300여 명 중 본선 60명에 선발(수상 아님)
+> **AX 인재전쟁 1기 (채널톡 트랙) 예선 제출작** · 2026-07-10 제출 · 예선 등록 5,300여 명 중 본선 60명에 선발(수상 아님) · [본선 풀영상](https://youtu.be/1eyDhaKx--w?t=86)(조코딩 채널, 1:26 이후 첫 인터뷰에 출연)
 > 제출한 파일 그대로는 태그 [`v1.0.0`](https://github.com/h6dr-git/improvement-verdict/tree/v1.0.0)에 있습니다. 지금 main은 공개 뒤 판정 규칙을 보강한 **v2**(2026-10)이고, 아래 '제출본 설명' 이하는 제출 당시 README 원문입니다.
 
 비결정적 AI 워크플로우(봇·에이전트·프롬프트)를 고쳤을 때, 그 수정이 **개선인지 개악인지, 아니면 아직 알 수 없는지**를
