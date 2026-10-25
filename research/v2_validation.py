@@ -212,7 +212,9 @@ def part_d(sims):
              ("--base .85 --target .97 --scenarios 1 --unchanged-middle 2 (그대로인 쪽 85%)",
               [0.85, 0.85, 0.85], [0.97, 0.85, 0.85]),
              ("--base .85 --target .97 --scenarios 1 --unchanged-middle 2 (그대로인 쪽 60%)",
-              [0.85, 0.6, 0.6], [0.97, 0.6, 0.6])]
+              [0.85, 0.6, 0.6], [0.97, 0.6, 0.6]),
+             ("--base .02 --target .16 --scenarios 2 --unchanged-middle 2 (그대로인 쪽 50%)",
+              [0.02, 0.02, 0.5, 0.5], [0.16, 0.16, 0.5, 0.5])]
     for i, (name, pb, pa) in enumerate(cases):
         t = simulate(pb, pa, ["v2"], sims, seed=901 + i)
         f, ci = _rate(t["v2"]["improved"], sims)

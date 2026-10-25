@@ -899,14 +899,18 @@ def run_online(runs, order, args, delta, delta_source, expected_notes=(), wait=N
     scen = _split(runs, order)
     counts = {(s, a): len(scen[s][a]) for s in order for a in ("before", "after")}
     max_count = max(counts.values())
+    # 모든 칸이 max_runs 이상인 팔(예: 미리 모아 둔 기준 실행)은 판정을 막을 수 없다 — 막힘 검사는 나머지 팔만 본다
+    complete = [a for a in ("before", "after") if all(counts[(s, a)] >= args.max_runs for s in order)]
+    active = {k: v for k, v in counts.items() if k[1] not in complete}
+    act_max = max(active.values()) if active else max_count
     if wait:
         # --expect-scenarios N 인데 아직 N개가 다 나오지 않았다 — 판정하지 않고 계속
         n_exp, n_seen = wait
-        if max_count > args.max_runs:
+        if act_max > args.max_runs:
             _online_stuck("--expect-scenarios 로 시나리오 %d개를 기다리는데 %d개만 나왔고, 나온 칸은 이미 max_runs(%d)를 "
                           "넘었습니다(최대 %d회) — 빠진 시나리오가 실제로 돌고 있는지 확인하세요(시나리오를 하나씩 끝내는 "
                           "파이프라인이면 시나리오당 실행을 max_runs 이하로 맞추세요)"
-                          % (n_exp, n_seen, args.max_runs, max_count), [])
+                          % (n_exp, n_seen, args.max_runs, act_max), [])
         note = expected_notes[0]
         print("CONTINUE — %s" % note)
         with open(args.json_out, "w", encoding="utf-8") as f:
@@ -931,16 +935,15 @@ def run_online(runs, order, args, delta, delta_source, expected_notes=(), wait=N
         empty = [(s, a, n) for (s, a), n in counts.items() if n == 0]
         # 한 팔 전체가 0회면 '아직 시작 전'(예: 기준 실행을 먼저 넣은 직후)이라 막힌 것으로 보지 않는다
         arm_not_started = any(all(counts[(s, a)] == 0 for s in order) for a in ("before", "after"))
-        if empty and max_count > args.max_runs and not arm_not_started:
-            _online_stuck("다른 칸은 이미 max_runs(%d)를 넘었는데(최대 %d회) 아래 칸은 실행이 하나도 없어 판정을 시작할 수 "
-                          "없습니다 — 파이프라인이 이 칸을 돌리는지 확인하세요(시나리오를 하나씩 끝내는 파이프라인이면 "
-                          "시나리오당 실행을 max_runs 이하로 맞추세요)" % (args.max_runs, max_count), empty)
-        if max_count > RUNAWAY_FACTOR * args.max_runs:
+        if empty and act_max > args.max_runs and not arm_not_started:
+            _online_stuck("같은 팔의 다른 칸은 이미 max_runs(%d)를 넘었는데(최대 %d회) 아래 칸은 실행이 하나도 없어 판정을 시작할 "
+                          "수 없습니다 — 파이프라인이 이 칸을 돌리는지 확인하세요(시나리오를 하나씩 끝내는 파이프라인이면 "
+                          "시나리오당 실행을 max_runs 이하로 맞추세요)" % (args.max_runs, act_max), empty)
+        if act_max > RUNAWAY_FACTOR * args.max_runs:
             lagging = [(s, a, n) for (s, a), n in counts.items() if n < next_ck]
             _online_stuck("어떤 칸은 max_runs(%d)의 %d배를 넘었는데(최대 %d회) 아래 칸이 다음 판정 시점(팔당 %d회)에 못 "
-                          "미쳐 판정이 진행되지 않습니다 — 파이프라인이 이 칸을 돌리는지 확인하세요(미리 모아 둔 기준 "
-                          "실행이 길다면 앞에서 max_runs개만 넘기세요)"
-                          % (args.max_runs, RUNAWAY_FACTOR, max_count, next_ck), lagging)
+                          "미쳐 판정이 진행되지 않습니다 — 파이프라인이 이 칸을 돌리는지 확인하세요"
+                          % (args.max_runs, RUNAWAY_FACTOR, act_max, next_ck), lagging)
     out = {"schema_version": SCHEMA_VERSION, "mode": "online", "action": action, "reason": reason,
            "exit_code": code, "runs_per_arm_min": cur_min,
            "config": {"delta": delta, "delta_source": delta_source, "primary": args.primary,
@@ -1020,6 +1023,8 @@ def run_plan(args):
         errs.append("--scenarios 는 1 이상이어야 합니다")
     if args.unchanged_middle < 0:
         errs.append("--unchanged-middle 은 0 이상이어야 합니다")
+    if args.unchanged_rate is not None and not (args.floor < args.unchanged_rate < args.ceiling):
+        errs.append("--unchanged-rate 는 중간층 범위(--floor %.2f ~ --ceiling %.2f 사이)여야 합니다" % (args.floor, args.ceiling))
     if not (0.0 < args.power < 1.0):
         errs.append("--power 는 (0, 1) 사이여야 합니다")
     if not (0.0 < args.error_budget < 0.5):
@@ -1036,6 +1041,9 @@ def run_plan(args):
         sys.exit(2)
     base, target, K, M, delta = args.base, args.target, args.scenarios, args.unchanged_middle, args.delta
     eff_target = base + (target - base) * K / float(K + M)
+    # 그대로일 중간층의 통과율: 지정이 없으면 --base(중간층 범위일 때) 아니면 0.5 — 중간층 시나리오라는 정의를 지킨다
+    u_rate = args.unchanged_rate if args.unchanged_rate is not None else (
+        base if args.floor < base < args.ceiling else 0.5)
     # 판정 경로(표시용): 바뀔 시나리오의 수정 전후 평균 통과율(양팔 합산 통과율의 기대치)로 층을 정한다 — verdict 와
     # 같은 기준. 시뮬레이션은 체크포인트마다 관측 통과율로 층을 다시 정해 실제 판정 경로를 따른다(calibrate.plan_paths).
     pooled = (base + target) / 2.0
@@ -1071,7 +1079,8 @@ def run_plan(args):
     for i, (b, m) in enumerate(configs):
         thr, calib, unc = load_calibration(args.calibration, b, m, args.error_budget)
         sim = calibrate.plan_paths(b, m, base, target, K, args.sims, args.seed + 7919 * (i + 1), delta, thr,
-                                   unchanged=M, guard_threshold=guard_thr, ceiling=args.ceiling, floor=args.floor)
+                                   unchanged=M, guard_threshold=guard_thr, ceiling=args.ceiling, floor=args.floor,
+                                   unchanged_rate=u_rate)
         row = {"batch_size": b, "max_runs": m, "threshold": thr, "calibrated": not unc,
                "recorded_fpr": calib["achieved_fpr"]}
         row.update(sim)
@@ -1083,7 +1092,8 @@ def run_plan(args):
         share = sum(r["guard_path_share"] for r in rows) / float(len(rows))
         notes.append("바뀔 시나리오의 수정 전후 평균 통과율(%.0f%%)이 %s층 기준(%.0f%% %s)이라, 실제 판정에서는 대개 %s층으로 "
                      "묶여 그 층의 가드(문턱 %.3f)로 확정됩니다 — 그대로일 중간층 %d개와 평균하지 않습니다. 시뮬레이션은 "
-                     "판정 시점마다 관측 통과율로 층을 다시 정해 실제 판정 경로를 따랐습니다(가드 경로 비율 약 %.0f%%)."
+                     "판정 시점마다 시나리오별 관측 통과율로 층을 다시 정해 실제 판정 경로를 따랐습니다(바뀔 시나리오가 "
+                     "가드로 판정된 시점 비율 약 %.0f%%)."
                      % (pooled * 100, STRATUM_KO[side], (args.ceiling if side == "ceiling" else args.floor) * 100,
                         "이상" if side == "ceiling" else "이하", STRATUM_KO[side], GUARD_THRESHOLD, M, share * 100))
     elif path == "overall" and side:
@@ -1092,7 +1102,8 @@ def run_plan(args):
     near = min(abs(pooled - args.ceiling), abs(pooled - args.floor))
     if args.primary == "stratified" and near < 0.03 and path != "guard":
         notes.append("바뀔 시나리오의 수정 전후 평균 통과율(%.0f%%)이 층 경계(%.0f%% / %.0f%%)에 가까워 표본에 따라 다른 층으로 "
-                     "묶입니다 — 시뮬레이션은 판정 시점마다 층을 다시 정해 따라가지만, 바뀔 시나리오들을 하나로 합친 근사입니다."
+                     "묶입니다 — 시뮬레이션은 판정 시점마다 시나리오별로 층을 다시 정해 따라가지만, 층 안의 시나리오들을 하나로 "
+                     "합친 근사입니다."
                      % (pooled * 100, args.floor * 100, args.ceiling * 100))
     if abs(target - base) <= delta:
         notes.append("기대 개선폭 %.1f%%p가 delta(%.1f%%p) 이하입니다 — 이 도구는 delta 밖의 차이만 개선으로 확정합니다."
@@ -1111,6 +1122,7 @@ def run_plan(args):
                "overall": "전체 평균(v1 방식) — %d개, 캘리브레이션 문턱" % sim_k}[path]
     out = {"schema_version": SCHEMA_VERSION, "mode": "plan",
            "inputs": {"base": base, "target": target, "scenarios": K, "unchanged_middle": M,
+                      "unchanged_rate": (u_rate if M else None),
                       "effective_target": round(sim_target, 6), "delta": delta,
                       "error_budget": args.error_budget, "target_power": args.power, "sims": args.sims,
                       "seed": args.seed, "primary": args.primary},
@@ -1121,14 +1133,15 @@ def run_plan(args):
            "recommended": ({"batch_size": rec["batch_size"], "max_runs": rec["max_runs"]} if rec else None),
            "normal_approx_runs_per_arm": (int(math.ceil(approx / float(sim_k))) if approx else None),
            "notes": notes,
-           "method": "판정 경로의 시나리오들을 체크포인트마다 실행 수를 합친 단일 시나리오로 근사한 순차 판정 시뮬레이션"
-                     " — futility 미적용(평균 실행 수는 상한 쪽)"}
+           "method": "시나리오마다 따로 뽑아 판정 시점마다 층을 정하고, 층 안의 시나리오는 실행 수를 합친 단일 시나리오로"
+                     " 근사한 순차 판정 시뮬레이션 — futility 미적용(평균 실행 수는 상한 쪽)"}
     print("=" * 72)
     print("계획 모드: 수정 전 %.0f%% -> 수정 후 %.0f%% 기대(%s 검출), 바뀔 시나리오 %d개 + 그대로일 중간층 %d개, "
           "delta %.3f, error_budget %g, 목표 검출률 %.0f%%"
           % (base * 100, target * 100, "개악" if target < base else "개선", K, M, delta, args.error_budget,
              args.power * 100))
-    print("판정 경로: %s" % path_ko)
+    print("판정 경로: %s%s" % (path_ko, (" | 그대로일 중간층 통과율 %.0f%%%s" % (
+        u_rate * 100, "" if args.unchanged_rate is not None else "(기본값 — --unchanged-rate 로 지정)")) if M else ""))
     print("-" * 72)
     print("  %-22s %-8s %-10s %-16s %-14s %s" % ("설정", "검출률", "평균 멈춤", "평균 실행(팔당)", "거짓양성(기록)", "문턱"))
     for r in rows:
@@ -1367,10 +1380,10 @@ def run_selftest(args):
                             problems.append("--expect-scenarios %s: 빠진 시나리오가 있으면 계속(0)이어야 하는데 %d"
                                             % ("N" if spec.isdigit() else "목록", rc3))
                     codes.append("빠진 시나리오 대기:%s" % ("ok" if not problems else "x"))
-                    # 수정 전 실행을 먼저 다 모아 둔 파이프라인: before 전부 -> after 배치. max_runs 를 절반으로 잡아
-                    # before 가 max_runs 보다 긴 상태를 만든다 — 첫 호출(after 0회)부터 끊기지 않고, 같은 순서의
+                    # 수정 전 실행을 먼저 다 모아 둔 파이프라인: before 전부 -> after 배치. max_runs 를 40%로 잡아
+                    # before 가 max_runs 의 2배보다 긴 상태를 만든다 — 첫 호출(after 0회)부터 끊기지 않고, 같은 순서의
                     # 오프라인 재생과 같은 시점·같은 코드로 멈춰야 한다
-                    bf_common = common + ["--max-runs", str(meta["max_runs"] // 2)]
+                    bf_common = common + ["--max-runs", str(meta["max_runs"] * 2 // 5)]
                     recs_ = [json.loads(ln) for ln in lines]
                     befores = [ln for ln, r in zip(lines, recs_) if r["arm"] == "before"]
                     afters = [ln for ln, r in zip(lines, recs_) if r["arm"] == "after"]
@@ -1450,6 +1463,8 @@ def main():
     ap.add_argument("--scenarios", type=int, default=1, help="[--plan] 바뀔 것으로 보는 (중간층) 시나리오 수 (기본 1)")
     ap.add_argument("--unchanged-middle", type=int, default=0,
                     help="[--plan] 그대로일 것으로 보는 중간층 시나리오 수 — 주 판정 평균에 함께 들어간다 (기본 0)")
+    ap.add_argument("--unchanged-rate", type=float, default=None,
+                    help="[--plan] 그대로일 중간층 시나리오의 통과율 (기본: --base 가 중간층 범위면 --base, 아니면 0.5)")
     ap.add_argument("--power", type=float, default=0.8, help="[--plan] 목표 검출률 (기본 0.8)")
     ap.add_argument("--sims", type=int, default=400, help="[--plan] 설정당 시뮬레이션 횟수 (기본 400)")
     ap.add_argument("--selftest", action="store_true", help="synth.py 케이스 자기검증")

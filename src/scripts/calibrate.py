@@ -67,59 +67,84 @@ def replay_paths(batch, max_runs, p_before, p_after, sims, seed, delta):
 
 
 def plan_paths(batch, max_runs, p_before, p_after, scenarios, sims, seed, delta, threshold,
-               unchanged=0, guard_threshold=None, ceiling=0.90, floor=0.10):
+               unchanged=0, guard_threshold=None, ceiling=0.90, floor=0.10, unchanged_rate=None):
     """계획 모드(verdict.py --plan)용 순차 판정 시뮬레이션.
 
-    바뀔 시나리오 K개(p_before -> p_after)와 그대로인 중간층 시나리오 M개(수정 전후 모두 p_before)를 각각
-    체크포인트마다 실행 수를 합친 단일 시나리오로 근사한다(K개 평균 차이의 사후분포와 합친 단일 시나리오의
-    사후분포는 분산이 같아지는 근사 — K=1, M=0 이면 판정 경로가 verdict.py 와 정확히 같다).
-      - guard_threshold 가 없으면(전체 평균 판정): K+M개를 합친 평균으로 판정.
-      - guard_threshold 가 있으면(층별 판정): 체크포인트마다 바뀔 쪽의 관측 합산 통과율로 층을 정한다.
-        천장·바닥층이고 M>=1 이면 verdict 의 주 판정 규칙과 같이 — 바뀔 쪽은 가드(guard_threshold),
-        주 판정은 그대로인 중간층(threshold), 개악이 있으면 개악, 아니면 개선. 그 밖에는 K+M개 평균(threshold).
+    바뀔 시나리오 K개(p_before -> p_after)와 그대로인 중간층 시나리오 M개(수정 전후 모두 unchanged_rate,
+    기본 p_before)를 시나리오마다 따로 뽑고, 판정 시점마다 verdict 와 같이 시나리오별 양팔 합산 통과율로
+    층을 정한다(양팔 전승/전패 시나리오는 집계에서 뺌). 층 안의 시나리오들은 실행 수를 합친 단일 시나리오로
+    근사한다(층 평균 차이의 사후분포와 분산이 같아지는 근사 — K=1, M=0 이면 판정 경로가 verdict 와 정확히 같다).
+      - guard_threshold 가 없으면(전체 평균 판정): 모든 시나리오를 합친 평균으로 판정.
+      - guard_threshold 가 있으면(층별 판정): 중간층과 천장·바닥층이 함께 있으면 verdict 의 주 판정 규칙과 같이
+        주 판정 = 중간층(threshold), 천장·바닥층 = 가드(guard_threshold, 양방향), 개악이 있으면 개악,
+        아니면 개선. 그렇지 않으면 전체 평균(threshold).
     첫 확정(improved/regressed)에서 멈추고 futility 는 넣지 않는다(평균 실행 수는 상한 쪽).
     '검출'은 기대 방향의 확정이다 — p_after > p_before 면 improved, 작으면 regressed.
-    반환: 검출률, 반대 방향 오판율, 검출 시 평균 멈춤(팔당), 전체 평균 실행 수(팔당), 가드 경로로 판정한 체크포인트 비율.
+    반환: 검출률, 반대 방향 오판율, 검출 시 평균 멈춤(팔당), 전체 평균 실행 수(팔당),
+    바뀔 시나리오가 천장·바닥층 가드로 판정된 시점의 비율(guard_path_share).
     """
     ncheck = max_runs // batch
-    nk = batch * scenarios
-    nm = batch * unchanged
+    K, M = scenarios, unchanged
+    u = p_before if unchanged_rate is None else unchanged_rate
     want = "regressed" if p_after < p_before else "improved"
-    cdf_b = _stats.binom_cdf_table(nk, p_before)
-    cdf_a = _stats.binom_cdf_table(nk, p_after)
-    cdf_u = _stats.binom_cdf_table(nm, p_before) if nm else None
+    cdf_b = _stats.binom_cdf_table(batch, p_before)
+    cdf_a = _stats.binom_cdf_table(batch, p_after)
+    cdf_u = _stats.binom_cdf_table(batch, u) if M else None
     rng = random.Random(seed)
     draw = _stats.binom_draw
     pdiff = _stats.prob_diff
+
+    def pooled(cells, n):
+        kb = sum(c[0] for c in cells)
+        ka = sum(c[1] for c in cells)
+        nn = n * len(cells)
+        return pdiff(kb, nn, ka, nn, delta)
+
     detected = wrong = 0
     stop_sum = 0
     runs_sum = 0
-    looks = side_looks = 0
+    looks = guard_looks = 0
     for _ in range(sims):
-        kb = ka = ub = ua = 0
-        n_k = n_m = 0
+        kb = [0] * K
+        ka = [0] * K
+        ub = [0] * M
+        ua = [0] * M
+        n = 0
         outcome = None
         for c in range(1, ncheck + 1):
-            kb += draw(rng, cdf_b)
-            ka += draw(rng, cdf_a)
-            n_k += nk
-            if nm:
-                ub += draw(rng, cdf_u)
-                ua += draw(rng, cdf_u)
-                n_m += nm
+            for i in range(K):
+                kb[i] += draw(rng, cdf_b)
+                ka[i] += draw(rng, cdf_a)
+            for j in range(M):
+                ub[j] += draw(rng, cdf_u)
+                ua[j] += draw(rng, cdf_u)
+            n += batch
             looks += 1
-            side = False
-            if guard_threshold is not None and nm:
-                pooled = (kb + ka) / (2.0 * n_k)
-                side = pooled >= ceiling or pooled <= floor
-            if side:
-                side_looks += 1
-                g_imp, g_reg, _ = pdiff(kb, n_k, ka, n_k, delta)
-                m_imp, m_reg, _ = pdiff(ub, n_m, ua, n_m, delta)
-                reg = g_reg >= guard_threshold or m_reg >= threshold
-                imp = (not reg) and (g_imp >= guard_threshold or m_imp >= threshold)
+            cells = [(kb[i], ka[i], True) for i in range(K)] + [(ub[j], ua[j], False) for j in range(M)]
+            cells = [x for x in cells if not ((x[0] == n and x[1] == n) or (x[0] == 0 and x[1] == 0))]
+            if not cells:
+                continue
+            groups = {"middle": [], "ceiling": [], "floor": []}
+            for x in cells:
+                rp = (x[0] + x[1]) / (2.0 * n)
+                groups["ceiling" if rp >= ceiling else ("floor" if rp <= floor else "middle")].append(x)
+            imp = reg = False
+            if guard_threshold is not None and groups["middle"] and (groups["ceiling"] or groups["floor"]):
+                if any(x[2] for g in ("ceiling", "floor") for x in groups[g]):
+                    guard_looks += 1
+                m_imp, m_reg, _ = pooled(groups["middle"], n)
+                reg, imp = m_reg >= threshold, m_imp >= threshold
+                side_imp = False
+                for g in ("ceiling", "floor"):
+                    if groups[g]:
+                        g_imp, g_reg, _ = pooled(groups[g], n)
+                        if g_reg >= guard_threshold:
+                            reg = True
+                        elif g_imp >= guard_threshold:
+                            side_imp = True
+                imp = (imp or side_imp) and not reg
             else:
-                p_imp, p_reg, _ = pdiff(kb + ub, n_k + n_m, ka + ua, n_k + n_m, delta)
+                p_imp, p_reg, _ = pooled(cells, n)
                 imp, reg = p_imp >= threshold, p_reg >= threshold
             if imp:
                 outcome = ("improved", c * batch)
@@ -141,7 +166,7 @@ def plan_paths(batch, max_runs, p_before, p_after, scenarios, sims, seed, delta,
             "wrong_direction": round(wrong / float(sims), 4),
             "mean_stop_when_detected": (round(stop_sum / float(detected), 1) if detected else None),
             "expected_runs_per_arm": round(runs_sum / float(sims), 1),
-            "guard_path_share": round(side_looks / float(looks), 4) if looks else 0.0,
+            "guard_path_share": round(guard_looks / float(looks), 4) if looks else 0.0,
             "sims": sims}
 
 

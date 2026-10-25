@@ -33,7 +33,9 @@ v2 설계 검증 — 문턱 0.99(가드 0.999), delta 0.03, batch 10 / max_runs 
     --base .60 --target .75 --scenarios 3 --unchanged-middle 1             v2 검출 0.667±0.021
     --base .85 --target .97 --scenarios 1 --unchanged-middle 2 (그대로인 쪽 85%) v2 검출 0.227±0.018
     --base .85 --target .97 --scenarios 1 --unchanged-middle 2 (그대로인 쪽 60%) v2 검출 0.224±0.018
-    (같은 계획의 verdict.py --plan 값: 0.65 / 0.23 — 시뮬 400회, 기본 시드)
+    --base .02 --target .16 --scenarios 2 --unchanged-middle 2 (그대로인 쪽 50%) v2 검출 0.748±0.019
+    (같은 계획의 verdict.py --plan 값: 0.66 / 0.21 / 0.73 — 시뮬 400회, 기본 시드. 바뀔 시나리오 여럿을 한 덩어리로
+     층에 넣던 이전 계획 모드는 마지막 줄을 0.89로 부풀렸다)
 
 [참고] research/real_rule_fpr.py — 실제 verdict.py 판정 함수, 시나리오 하나짜리 층은 정확 적분, futility 없음, 2만 데이터셋
     시나리오 1개 (50%) — v1·v2 동일            0.0496±0.0030
