@@ -890,8 +890,9 @@ def run_online(runs, order, args, delta, delta_source, expected_notes=(), wait=N
     지금까지 나온 시나리오만 안다. 시나리오를 하나씩 차례로 돌리는 파이프라인이면 --expect-scenarios 로
     전체 시나리오를 알려 줘야 한다(아직 안 나온 시나리오는 0회로 잡혀 판정이 시작되지 않는다).
     팔·칸마다 실행 수가 달라도 된다(예: 기준 실행을 먼저 모아 둔 경우) — 재생이 이미 멈췄으면 그 멈춤을 그대로 낸다.
-    루프가 끝나지 않을 상태만 입력 오류(2)로 막는다: 다른 칸이 max_runs 를 넘었는데 실행이 하나도 없는 칸(빠진
-    시나리오 포함)이 있거나, 어떤 칸이 max_runs 의 RUNAWAY_FACTOR 배를 넘었는데도 다음 판정 시점에 못 닿는 칸이 있을 때.
+    루프가 끝나지 않을 상태만 입력 오류(2)로 막는다(팔마다 따로 본다): 같은 팔의 다른 칸이 max_runs 를 넘었는데 실행이
+    하나도 없는 칸(빠진 시나리오 포함)이 있거나, 같은 팔의 어떤 칸이 max_runs 의 RUNAWAY_FACTOR 배를 넘었는데도 다음
+    판정 시점에 못 닿는 칸이 있을 때. 호출 사이를 기억하지 않으므로, 실행 수가 그대로인 채 반복 호출되는 정체는 못 잡는다.
     종료코드: 0 계속 / 10 개선 확정 / 11 개악 확정 / 12 무익 / 13 예산 소진 (2·3은 입력·설정 오류).
     """
     threshold, calib, uncalibrated = load_calibration(args.calibration, args.batch_size,
@@ -899,7 +900,7 @@ def run_online(runs, order, args, delta, delta_source, expected_notes=(), wait=N
     scen = _split(runs, order)
     counts = {(s, a): len(scen[s][a]) for s in order for a in ("before", "after")}
     max_count = max(counts.values())
-    # 모든 칸이 max_runs 이상인 팔(예: 미리 모아 둔 기준 실행)은 판정을 막을 수 없다 — 막힘 검사는 나머지 팔만 본다
+    # 대기 분기용: 모든 칸이 max_runs 이상인 팔(예: 미리 모아 둔 기준 실행)은 빠진 시나리오를 기다리는 것을 막지 않는다
     complete = [a for a in ("before", "after") if all(counts[(s, a)] >= args.max_runs for s in order)]
     active = {k: v for k, v in counts.items() if k[1] not in complete}
     act_max = max(active.values()) if active else max_count
@@ -932,18 +933,23 @@ def run_online(runs, order, args, delta, delta_source, expected_notes=(), wait=N
         action, code = "stop", ONLINE_EXIT["max_runs"]
     else:
         action, code, reason = "continue", ONLINE_EXIT["continue"], None
-        empty = [(s, a, n) for (s, a), n in counts.items() if n == 0]
-        # 한 팔 전체가 0회면 '아직 시작 전'(예: 기준 실행을 먼저 넣은 직후)이라 막힌 것으로 보지 않는다
-        arm_not_started = any(all(counts[(s, a)] == 0 for s in order) for a in ("before", "after"))
-        if empty and act_max > args.max_runs and not arm_not_started:
-            _online_stuck("같은 팔의 다른 칸은 이미 max_runs(%d)를 넘었는데(최대 %d회) 아래 칸은 실행이 하나도 없어 판정을 시작할 "
-                          "수 없습니다 — 파이프라인이 이 칸을 돌리는지 확인하세요(시나리오를 하나씩 끝내는 파이프라인이면 "
-                          "시나리오당 실행을 max_runs 이하로 맞추세요)" % (args.max_runs, act_max), empty)
-        if act_max > RUNAWAY_FACTOR * args.max_runs:
-            lagging = [(s, a, n) for (s, a), n in counts.items() if n < next_ck]
-            _online_stuck("어떤 칸은 max_runs(%d)의 %d배를 넘었는데(최대 %d회) 아래 칸이 다음 판정 시점(팔당 %d회)에 못 "
-                          "미쳐 판정이 진행되지 않습니다 — 파이프라인이 이 칸을 돌리는지 확인하세요"
-                          % (args.max_runs, RUNAWAY_FACTOR, act_max, next_ck), lagging)
+        # 막힘 검사는 팔마다 따로 한다 — 미리 모아 둔 기준 실행처럼 한 팔이 길거나 고르지 않아도 다른 팔을 막힘으로 보지
+        # 않는다. 한 팔 전체가 0회('아직 시작 전')면 그 팔의 최대도 0이라 걸리지 않는다.
+        arm_cells = {a: [(s, a, counts[(s, a)]) for s in order] for a in ("before", "after")}
+        for a, cells in arm_cells.items():
+            arm_max = max(c[2] for c in cells)
+            empty = [c for c in cells if c[2] == 0]
+            if empty and arm_max > args.max_runs:
+                _online_stuck("같은 팔(%s)의 다른 칸은 이미 max_runs(%d)를 넘었는데(최대 %d회) 아래 칸은 실행이 하나도 없어 판정을 "
+                              "시작할 수 없습니다 — 파이프라인이 이 칸을 돌리는지 확인하세요(시나리오를 하나씩 끝내는 "
+                              "파이프라인이면 시나리오당 실행을 max_runs 이하로 맞추세요)" % (a, args.max_runs, arm_max), empty)
+        for a, cells in arm_cells.items():
+            arm_max = max(c[2] for c in cells)
+            lagging = [c for c in cells if c[2] < next_ck]
+            if lagging and arm_max > RUNAWAY_FACTOR * args.max_runs:
+                _online_stuck("같은 팔(%s)의 어떤 칸은 max_runs(%d)의 %d배를 넘었는데(최대 %d회) 아래 칸이 다음 판정 시점(팔당 "
+                              "%d회)에 못 미쳐 판정이 진행되지 않습니다 — 파이프라인이 이 칸을 돌리는지 확인하세요(미리 모아 둔 "
+                              "실행이라면 짧은 칸을 채우세요)" % (a, args.max_runs, RUNAWAY_FACTOR, arm_max, next_ck), lagging)
     out = {"schema_version": SCHEMA_VERSION, "mode": "online", "action": action, "reason": reason,
            "exit_code": code, "runs_per_arm_min": cur_min,
            "config": {"delta": delta, "delta_source": delta_source, "primary": args.primary,
